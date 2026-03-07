@@ -170,6 +170,33 @@ function normalizeThreadStartedSource(
 
   const source = asObject(sourceValue);
   if (!source) {
+    const sourceKind = normalizeNonEmptyString(asString(sourceValue));
+    if (sourceKind) {
+      switch (sourceKind) {
+        case "cli":
+        case "vscode":
+        case "exec":
+        case "unknown":
+          return withThreadStartedAgentMetadata(
+            { kind: sourceKind },
+            topLevelAgentNickname,
+            topLevelAgentRole,
+          );
+        case "mcp":
+          return withThreadStartedAgentMetadata(
+            { kind: "appServer" },
+            topLevelAgentNickname,
+            topLevelAgentRole,
+          );
+        default:
+          return withThreadStartedAgentMetadata(
+            { kind: "unknown" },
+            topLevelAgentNickname,
+            topLevelAgentRole,
+          );
+      }
+    }
+
     if (topLevelAgentNickname !== undefined || topLevelAgentRole !== undefined) {
       return withThreadStartedAgentMetadata(
         { kind: "unknown" },
@@ -177,33 +204,8 @@ function normalizeThreadStartedSource(
         topLevelAgentRole,
       );
     }
-    const sourceKind = normalizeNonEmptyString(asString(sourceValue));
-    if (!sourceKind) {
-      return undefined;
-    }
-    switch (sourceKind) {
-      case "cli":
-      case "vscode":
-      case "exec":
-      case "unknown":
-        return withThreadStartedAgentMetadata(
-          { kind: sourceKind },
-          topLevelAgentNickname,
-          topLevelAgentRole,
-        );
-      case "mcp":
-        return withThreadStartedAgentMetadata(
-          { kind: "appServer" },
-          topLevelAgentNickname,
-          topLevelAgentRole,
-        );
-      default:
-        return withThreadStartedAgentMetadata(
-          { kind: "unknown" },
-          topLevelAgentNickname,
-          topLevelAgentRole,
-        );
-    }
+
+    return undefined;
   }
 
   const subagent = source.subagent;

@@ -506,6 +506,49 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("preserves string-based thread source kinds when top-level agent metadata is explicitly null", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-thread-started-string-source-null-agent-metadata"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "thread/started",
+        payload: {
+          thread: {
+            id: "provider-thread-3",
+            source: "mcp",
+            agentNickname: null,
+            agentRole: null,
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "thread.started");
+      if (firstEvent.value.type !== "thread.started") {
+        return;
+      }
+      assert.deepEqual(firstEvent.value.payload, {
+        providerThreadId: "provider-thread-3",
+        source: {
+          kind: "appServer",
+          agentNickname: null,
+          agentRole: null,
+        },
+      });
+    }),
+  );
+
   it.effect("ignores thread/started notifications without a recoverable provider thread id", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

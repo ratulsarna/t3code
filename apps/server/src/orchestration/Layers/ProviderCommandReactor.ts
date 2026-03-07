@@ -61,6 +61,14 @@ function mapProviderSessionStatusToOrchestrationStatus(
   }
 }
 
+function readProviderThreadIdFromResumeCursor(resumeCursor: unknown): string | null {
+  if (!resumeCursor || typeof resumeCursor !== "object" || Array.isArray(resumeCursor)) {
+    return null;
+  }
+  const rawThreadId = (resumeCursor as Record<string, unknown>).threadId;
+  return typeof rawThreadId === "string" && rawThreadId.trim().length > 0 ? rawThreadId : null;
+}
+
 const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
   event.commandId !== null ? `command:${event.commandId}` : `event:${event.eventId}`;
 
@@ -250,6 +258,11 @@ const make = Effect.gen(function* () {
           threadId,
           status: mapProviderSessionStatusToOrchestrationStatus(session.status),
           providerName: session.provider,
+          providerSessionId: null,
+          providerThreadId:
+            readProviderThreadIdFromResumeCursor(session.resumeCursor) ??
+            thread.session?.providerThreadId ??
+            null,
           runtimeMode: desiredRuntimeMode,
           // Provider turn ids are not orchestration turn ids.
           activeTurnId: null,

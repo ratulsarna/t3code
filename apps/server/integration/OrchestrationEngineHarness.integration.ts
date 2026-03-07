@@ -267,6 +267,7 @@ export const makeOrchestrationIntegrationHarness = (
       ProjectionCheckpointRepositoryLive,
       ProjectionPendingApprovalRepositoryLive,
       CheckpointStoreLive,
+      providerSessionDirectoryLayer,
       providerLayer,
     );
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(

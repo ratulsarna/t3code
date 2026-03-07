@@ -1,8 +1,11 @@
 import { Schema } from "effect";
 import {
+  ThreadOrigin as SharedThreadStartedSource,
+  ThreadOriginKind as SharedThreadStartedSourceKind,
+} from "./threadOrigin";
+import {
   EventId,
   IsoDateTime,
-  NonNegativeInt,
   ProviderItemId,
   RuntimeItemId,
   RuntimeRequestId,
@@ -269,27 +272,10 @@ const SessionExitedPayload = Schema.Struct({
 });
 export type SessionExitedPayload = typeof SessionExitedPayload.Type;
 
-const ThreadStartedSourceKind = Schema.Literals([
-  "cli",
-  "vscode",
-  "exec",
-  "appServer",
-  "subAgentReview",
-  "subAgentCompact",
-  "subAgentThreadSpawn",
-  "subAgentOther",
-  "unknown",
-]);
+export const ThreadStartedSourceKind = SharedThreadStartedSourceKind;
 export type ThreadStartedSourceKind = typeof ThreadStartedSourceKind.Type;
 
-const ThreadStartedSource = Schema.Struct({
-  kind: ThreadStartedSourceKind,
-  parentProviderThreadId: Schema.optional(TrimmedNonEmptyStringSchema),
-  depth: Schema.optional(NonNegativeInt),
-  agentNickname: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
-  agentRole: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
-  otherKind: Schema.optional(TrimmedNonEmptyStringSchema),
-});
+export const ThreadStartedSource = SharedThreadStartedSource;
 export type ThreadStartedSource = typeof ThreadStartedSource.Type;
 
 const ThreadStartedPayload = Schema.Struct({

@@ -135,6 +135,57 @@ function createPendingUserInputHarness() {
   return { manager, context, requireSession, writeMessage, emitEvent };
 }
 
+describe("CodexAppServerManager thread started resume cursor handling", () => {
+  it("updates the parent resume cursor for root thread starts", () => {
+    const { manager, context, updateSession } = createThreadControlHarness();
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: unknown) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "thread/started",
+      params: {
+        thread: {
+          id: "provider-thread-root",
+          source: "cli",
+        },
+      },
+    });
+
+    expect(updateSession).toHaveBeenCalledWith(context, {
+      resumeCursor: { threadId: "provider-thread-root" },
+    });
+  });
+
+  it("does not overwrite the parent resume cursor for spawned subagent threads", () => {
+    const { manager, context, updateSession } = createThreadControlHarness();
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: unknown) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "thread/started",
+      params: {
+        thread: {
+          id: "provider-thread-child",
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: "provider-thread-root",
+                depth: 1,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(updateSession).not.toHaveBeenCalled();
+  });
+});
+
 describe("classifyCodexStderrLine", () => {
   it("ignores empty lines", () => {
     expect(classifyCodexStderrLine("   ")).toBeNull();

@@ -53,7 +53,11 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
-const ProjectionThreadDbRowSchema = ProjectionThread;
+const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
+  Struct.assign({
+    origin: Schema.NullOr(Schema.fromJsonString(ProjectionThread.fields.origin)),
+  }),
+);
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   Struct.assign({
     payload: Schema.fromJsonString(Schema.Unknown),
@@ -161,6 +165,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          provider_thread_id AS "providerThreadId",
+          parent_thread_id AS "parentThreadId",
+          origin_json AS "origin",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -506,6 +513,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               threadId: row.threadId,
               status: row.status,
               providerName: row.providerName,
+              providerSessionId: row.providerSessionId,
+              providerThreadId: row.providerThreadId,
               runtimeMode: row.runtimeMode,
               activeTurnId: row.activeTurnId,
               lastError: row.lastError,
@@ -530,10 +539,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             title: row.title,
             model: row.model,
             runtimeMode: row.runtimeMode,
-            interactionMode: row.interactionMode,
-            branch: row.branch,
-            worktreePath: row.worktreePath,
-            latestTurn: latestTurnByThread.get(row.threadId) ?? null,
+              interactionMode: row.interactionMode,
+              branch: row.branch,
+              worktreePath: row.worktreePath,
+              providerThreadId: row.providerThreadId,
+              parentThreadId: row.parentThreadId,
+              origin: row.origin,
+              latestTurn: latestTurnByThread.get(row.threadId) ?? null,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
             deletedAt: row.deletedAt,

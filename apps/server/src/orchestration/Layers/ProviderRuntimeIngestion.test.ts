@@ -19,11 +19,14 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
+import { ProviderSessionRuntimeRepositoryLive } from "../../persistence/Layers/ProviderSessionRuntime.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
+import { ProviderSessionDirectoryLive } from "../../provider/Layers/ProviderSessionDirectory.ts";
+import { ProviderSessionRuntimeRepository } from "../../persistence/Services/ProviderSessionRuntime.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
@@ -112,7 +115,9 @@ type ProviderRuntimeTestCheckpoint = ProviderRuntimeTestThread["checkpoints"][nu
 
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderRuntimeIngestionService,
+    | OrchestrationEngineService
+    | ProviderRuntimeIngestionService
+    | ProviderSessionRuntimeRepository,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -138,7 +143,7 @@ describe("ProviderRuntimeIngestion", () => {
     }
   });
 
-  async function createHarness() {
+async function createHarness() {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     fs.mkdirSync(path.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
@@ -148,15 +153,26 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provide(SqlitePersistenceMemory),
     );
+    const providerSessionRuntimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+      Layer.provide(SqlitePersistenceMemory),
+    );
+    const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
+      Layer.provide(providerSessionRuntimeRepositoryLayer),
+    );
     const layer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
+      Layer.provideMerge(providerSessionRuntimeRepositoryLayer),
+      Layer.provideMerge(providerSessionDirectoryLayer),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
     );
     runtime = ManagedRuntime.make(layer);
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
+    const providerSessionRuntimeRepository = await runtime.runPromise(
+      Effect.service(ProviderSessionRuntimeRepository),
+    );
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start.pipe(Scope.provide(scope)));
     await Effect.runPromise(Effect.sleep("10 millis"));
@@ -209,6 +225,7 @@ describe("ProviderRuntimeIngestion", () => {
     return {
       engine,
       emit: provider.emit,
+      providerSessionRuntimeRepository,
     };
   }
 
@@ -1509,5 +1526,67 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("runtime still processed");
+  });
+
+  it("materializes spawned subagent threads and persists their provider binding", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "thread.started",
+      eventId: asEventId("evt-thread-child-started"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        providerThreadId: "provider-thread-child-1",
+        name: "Child review",
+        preview: "Investigate the failing test",
+        source: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-thread-root-1",
+          depth: 1,
+          agentNickname: "Confucius",
+          agentRole: "reviewer",
+        },
+      },
+    });
+
+    const childThread = await (async () => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const readModel = await Effect.runPromise(harness.engine.getReadModel());
+        const found = readModel.threads.find(
+          (thread) => thread.providerThreadId === "provider-thread-child-1",
+        );
+        if (found) {
+          return found;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("Timed out waiting for child thread materialization");
+    })();
+
+    expect(childThread.parentThreadId).toBe("thread-1");
+    expect(childThread.origin).toEqual({
+      kind: "subAgentThreadSpawn",
+      parentProviderThreadId: "provider-thread-root-1",
+      depth: 1,
+      agentNickname: "Confucius",
+      agentRole: "reviewer",
+    });
+    expect(childThread.title).toBe("Child review");
+    expect(childThread.session?.status).toBe("ready");
+    expect(childThread.session?.providerThreadId).toBe("provider-thread-child-1");
+
+    const binding = await Effect.runPromise(
+      harness.providerSessionRuntimeRepository.getByThreadId({ threadId: childThread.id }),
+    );
+    expect(binding._tag).toBe("Some");
+    if (binding._tag === "Some") {
+      expect(binding.value.providerName).toBe("codex");
+      expect(binding.value.resumeCursor).toEqual({ threadId: "provider-thread-child-1" });
+      expect(binding.value.runtimeMode).toBe("approval-required");
+    }
   });
 });

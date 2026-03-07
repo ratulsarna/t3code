@@ -368,6 +368,16 @@ describe("ProviderRuntimeIngestion", () => {
       provider: "codex",
       createdAt: new Date().toISOString(),
       threadId: asThreadId("thread-1"),
+      payload: {
+        providerThreadId: "provider-thread-midturn",
+        source: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-parent-midturn",
+          depth: 1,
+          agentNickname: "Atlas",
+          agentRole: "explorer",
+        },
+      },
     });
     harness.emit({
       type: "session.started",
@@ -1108,6 +1118,16 @@ describe("ProviderRuntimeIngestion", () => {
       provider: "codex",
       createdAt: now,
       threadId: asThreadId("thread-1"),
+      payload: {
+        providerThreadId: "provider-thread-1",
+        source: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-parent-1",
+          depth: 1,
+          agentNickname: "Atlas",
+          agentRole: "explorer",
+        },
+      },
     });
     harness.emit({
       type: "item.started",

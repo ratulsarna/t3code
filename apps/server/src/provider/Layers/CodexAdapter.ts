@@ -11,6 +11,7 @@ import {
   type CanonicalRequestType,
   type ProviderEvent,
   type ProviderRuntimeEvent,
+  type ThreadStartedPayload,
   type ProviderUserInputAnswers,
   RuntimeItemId,
   RuntimeRequestId,
@@ -107,6 +108,194 @@ function asArray(value: unknown): unknown[] | undefined {
 
 function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function asNonNegativeInt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function normalizeNonEmptyString(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
+function readNullableNonEmptyString(value: unknown): string | null | undefined {
+  if (value === null) {
+    return null;
+  }
+  return normalizeNonEmptyString(asString(value));
+}
+
+function readNullableString(value: unknown): string | null | undefined {
+  if (value === null) {
+    return null;
+  }
+  return asString(value);
+}
+
+function withThreadStartedAgentMetadata(
+  source: Omit<ThreadStartedSource, "agentNickname" | "agentRole">,
+  agentNickname: string | null | undefined,
+  agentRole: string | null | undefined,
+): ThreadStartedSource {
+  return {
+    ...source,
+    ...(agentNickname !== undefined ? { agentNickname } : {}),
+    ...(agentRole !== undefined ? { agentRole } : {}),
+  };
+}
+
+function coalesceNullableString(
+  primary: string | null | undefined,
+  fallback: string | null | undefined,
+): string | null | undefined {
+  if (primary !== undefined && primary !== null) {
+    return primary;
+  }
+  if (fallback !== undefined) {
+    return fallback;
+  }
+  return primary;
+}
+
+type ThreadStartedSource = NonNullable<ThreadStartedPayload["source"]>;
+
+function normalizeThreadStartedSource(
+  sourceValue: unknown,
+  agentNicknameValue: unknown,
+  agentRoleValue: unknown,
+): ThreadStartedSource | undefined {
+  const topLevelAgentNickname = readNullableNonEmptyString(agentNicknameValue);
+  const topLevelAgentRole = readNullableNonEmptyString(agentRoleValue);
+
+  const source = asObject(sourceValue);
+  if (!source) {
+    if (topLevelAgentNickname !== undefined || topLevelAgentRole !== undefined) {
+      return withThreadStartedAgentMetadata(
+        { kind: "unknown" },
+        topLevelAgentNickname,
+        topLevelAgentRole,
+      );
+    }
+    const sourceKind = normalizeNonEmptyString(asString(sourceValue));
+    if (!sourceKind) {
+      return undefined;
+    }
+    switch (sourceKind) {
+      case "cli":
+      case "vscode":
+      case "exec":
+      case "unknown":
+        return withThreadStartedAgentMetadata(
+          { kind: sourceKind },
+          topLevelAgentNickname,
+          topLevelAgentRole,
+        );
+      case "mcp":
+        return withThreadStartedAgentMetadata(
+          { kind: "appServer" },
+          topLevelAgentNickname,
+          topLevelAgentRole,
+        );
+      default:
+        return withThreadStartedAgentMetadata(
+          { kind: "unknown" },
+          topLevelAgentNickname,
+          topLevelAgentRole,
+        );
+    }
+  }
+
+  const subagent = source.subagent;
+  const subagentValue = normalizeNonEmptyString(asString(subagent));
+  if (subagentValue) {
+    switch (subagentValue) {
+      case "review":
+        return withThreadStartedAgentMetadata(
+          { kind: "subAgentReview" },
+          topLevelAgentNickname,
+          topLevelAgentRole,
+        );
+      case "compact":
+        return withThreadStartedAgentMetadata(
+          { kind: "subAgentCompact" },
+          topLevelAgentNickname,
+          topLevelAgentRole,
+        );
+      default:
+        return withThreadStartedAgentMetadata(
+          { kind: "subAgentOther", otherKind: subagentValue },
+          topLevelAgentNickname,
+          topLevelAgentRole,
+        );
+    }
+  }
+
+  const subagentRecord = asObject(subagent);
+  if (!subagentRecord) {
+    return withThreadStartedAgentMetadata(
+      { kind: "unknown" },
+      topLevelAgentNickname,
+      topLevelAgentRole,
+    );
+  }
+
+  const threadSpawn = asObject(subagentRecord.thread_spawn);
+  if (threadSpawn) {
+    const parentProviderThreadId = normalizeNonEmptyString(asString(threadSpawn.parent_thread_id));
+    const depth = asNonNegativeInt(threadSpawn.depth);
+    const agentNickname = coalesceNullableString(
+      readNullableNonEmptyString(threadSpawn.agent_nickname),
+      topLevelAgentNickname,
+    );
+    const agentRole = coalesceNullableString(
+      readNullableNonEmptyString(threadSpawn.agent_role),
+      topLevelAgentRole,
+    );
+    return {
+      kind: "subAgentThreadSpawn",
+      ...(parentProviderThreadId ? { parentProviderThreadId } : {}),
+      ...(depth !== undefined ? { depth } : {}),
+      ...(agentNickname !== undefined ? { agentNickname } : {}),
+      ...(agentRole !== undefined ? { agentRole } : {}),
+    };
+  }
+
+  const otherKind = normalizeNonEmptyString(asString(subagentRecord.other));
+  if (otherKind) {
+    return withThreadStartedAgentMetadata(
+      { kind: "subAgentOther", otherKind },
+      topLevelAgentNickname,
+      topLevelAgentRole,
+    );
+  }
+
+  return withThreadStartedAgentMetadata(
+    { kind: "unknown" },
+    topLevelAgentNickname,
+    topLevelAgentRole,
+  );
+}
+
+function readThreadStartedPayload(payload: Record<string, unknown> | undefined): ThreadStartedPayload | undefined {
+  const thread = asObject(payload?.thread);
+  const providerThreadId =
+    normalizeNonEmptyString(asString(thread?.id)) ?? normalizeNonEmptyString(asString(payload?.threadId));
+  if (!providerThreadId) {
+    return undefined;
+  }
+
+  const name = readNullableNonEmptyString(thread?.name);
+  const preview = readNullableString(thread?.preview);
+  const source = normalizeThreadStartedSource(thread?.source, thread?.agentNickname, thread?.agentRole);
+
+  return {
+    providerThreadId,
+    ...(name !== undefined ? { name } : {}),
+    ...(preview !== undefined ? { preview } : {}),
+    ...(thread && Object.prototype.hasOwnProperty.call(thread, "status") ? { status: thread.status } : {}),
+    ...(source ? { source } : {}),
+  };
 }
 
 function toTurnStatus(value: unknown): "completed" | "failed" | "cancelled" | "interrupted" {
@@ -642,18 +831,15 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "thread/started") {
-    const payloadThreadId = asString(asObject(payload?.thread)?.id);
-    const providerThreadId = payloadThreadId ?? asString(payload?.threadId);
-    if (!providerThreadId) {
+    const threadStartedPayload = readThreadStartedPayload(payload);
+    if (!threadStartedPayload) {
       return [];
     }
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
         type: "thread.started",
-        payload: {
-          providerThreadId,
-        },
+        payload: threadStartedPayload,
       },
     ];
   }

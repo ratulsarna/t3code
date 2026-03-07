@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import {
   EventId,
   IsoDateTime,
+  NonNegativeInt,
   ProviderItemId,
   RuntimeItemId,
   RuntimeRequestId,
@@ -268,8 +269,35 @@ const SessionExitedPayload = Schema.Struct({
 });
 export type SessionExitedPayload = typeof SessionExitedPayload.Type;
 
+const ThreadStartedSourceKind = Schema.Literals([
+  "cli",
+  "vscode",
+  "exec",
+  "appServer",
+  "subAgentReview",
+  "subAgentCompact",
+  "subAgentThreadSpawn",
+  "subAgentOther",
+  "unknown",
+]);
+export type ThreadStartedSourceKind = typeof ThreadStartedSourceKind.Type;
+
+const ThreadStartedSource = Schema.Struct({
+  kind: ThreadStartedSourceKind,
+  parentProviderThreadId: Schema.optional(TrimmedNonEmptyStringSchema),
+  depth: Schema.optional(NonNegativeInt),
+  agentNickname: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+  agentRole: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+  otherKind: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type ThreadStartedSource = typeof ThreadStartedSource.Type;
+
 const ThreadStartedPayload = Schema.Struct({
   providerThreadId: Schema.optional(TrimmedNonEmptyStringSchema),
+  name: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+  preview: Schema.optional(Schema.NullOr(Schema.String)),
+  status: Schema.optional(Schema.Unknown),
+  source: Schema.optional(ThreadStartedSource),
 });
 export type ThreadStartedPayload = typeof ThreadStartedPayload.Type;
 

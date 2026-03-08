@@ -1711,4 +1711,80 @@ async function createHarness() {
     });
     expect(childThread.title).toBe("Subagent");
   });
+
+  it("parents nested collab children under the sender thread when it already exists locally", async () => {
+    const harness = await createHarness();
+    const createdAt = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.materialize",
+        commandId: CommandId.makeUnsafe("cmd-thread-materialize-nested-parent"),
+        threadId: ThreadId.makeUnsafe("thread-child-parent"),
+        projectId: asProjectId("project-1"),
+        title: "Child Parent",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        providerThreadId: "provider-thread-child-parent",
+        parentThreadId: ThreadId.makeUnsafe("thread-1"),
+        origin: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-thread-root-1",
+        },
+        createdAt,
+      }),
+    );
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-collab-grandchild"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt,
+      turnId: asTurnId("turn-collab-grandchild"),
+      itemId: asItemId("call-collab-grandchild"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        data: {
+          item: {
+            type: "collabAgentToolCall",
+            id: "call-collab-grandchild",
+            tool: "spawnAgent",
+            status: "completed",
+            senderThreadId: "provider-thread-child-parent",
+            receiverThreadIds: ["provider-thread-grandchild-1"],
+            prompt: "hello",
+            agentsStates: {},
+          },
+          threadId: "provider-thread-root-1",
+          turnId: "turn-collab-grandchild",
+        },
+      },
+    });
+
+    const grandchildThread = await (async () => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const readModel = await Effect.runPromise(harness.engine.getReadModel());
+        const found = readModel.threads.find(
+          (thread) => thread.providerThreadId === "provider-thread-grandchild-1",
+        );
+        if (found) {
+          return found;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("Timed out waiting for nested collab grandchild materialization");
+    })();
+
+    expect(grandchildThread.parentThreadId).toBe("thread-child-parent");
+    expect(grandchildThread.origin).toEqual({
+      kind: "subAgentThreadSpawn",
+      parentProviderThreadId: "provider-thread-child-parent",
+    });
+  });
 });

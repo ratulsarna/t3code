@@ -704,7 +704,11 @@ const make = Effect.gen(function* () {
       input.parentThread.providerThreadId ??
       input.parentThread.session?.providerThreadId ??
       undefined;
-    const parentBinding = yield* providerSessionDirectory.getBinding(input.parentThread.id);
+    const effectiveParentThread =
+      input.readModel.threads.find(
+        (entry) => entry.providerThreadId === parentProviderThreadId && entry.deletedAt === null,
+      ) ?? input.parentThread;
+    const parentBinding = yield* providerSessionDirectory.getBinding(effectiveParentThread.id);
 
     for (const providerThreadId of receiverProviderThreadIds) {
       const existingChild = input.readModel.threads.find(
@@ -719,15 +723,15 @@ const make = Effect.gen(function* () {
         type: "thread.materialize",
         commandId: providerCommandId(input.event, "thread-materialize-collab"),
         threadId: childThreadId,
-        projectId: input.parentThread.projectId,
+        projectId: effectiveParentThread.projectId,
         title: "Subagent",
-        model: input.parentThread.model,
-        runtimeMode: input.parentThread.runtimeMode,
-        interactionMode: input.parentThread.interactionMode,
+        model: effectiveParentThread.model,
+        runtimeMode: effectiveParentThread.runtimeMode,
+        interactionMode: effectiveParentThread.interactionMode,
         branch: null,
         worktreePath: null,
         providerThreadId,
-        parentThreadId: input.parentThread.id,
+        parentThreadId: effectiveParentThread.id,
         origin: {
           kind: "subAgentThreadSpawn",
           ...(parentProviderThreadId ? { parentProviderThreadId } : {}),
@@ -738,9 +742,9 @@ const make = Effect.gen(function* () {
       yield* providerSessionDirectory.upsert({
         threadId: childThreadId,
         provider: input.event.provider,
-        runtimeMode: input.parentThread.runtimeMode,
+        runtimeMode: effectiveParentThread.runtimeMode,
         status: providerRuntimeStatusFromOrchestrationSession(
-          input.parentThread.session?.status ?? "ready",
+          effectiveParentThread.session?.status ?? "ready",
         ),
         resumeCursor: { threadId: providerThreadId },
         ...(Option.isSome(parentBinding) && parentBinding.value.runtimePayload !== null

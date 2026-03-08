@@ -972,6 +972,7 @@ export default function Sidebar() {
               }}
               onKeyDown={(event) => {
                 if (event.key !== "Enter" && event.key !== " ") return;
+                if (event.currentTarget !== event.target) return;
                 event.preventDefault();
                 void navigate({
                   to: "/$threadId",
@@ -995,6 +996,12 @@ export default function Sidebar() {
                     data-sidebar-thread-toggle={thread.id}
                     className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground/70 transition-transform hover:bg-accent hover:text-foreground"
                     onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setThreadBranchExpanded(thread.id, !isExpanded);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter" && event.key !== " ") return;
                       event.preventDefault();
                       event.stopPropagation();
                       setThreadBranchExpanded(thread.id, !isExpanded);

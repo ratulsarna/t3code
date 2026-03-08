@@ -88,7 +88,7 @@ function createNativeApiStub(): NativeApi {
       getConfig: async () => createServerConfig(),
     },
     orchestration: {
-      dispatchCommand: async () => undefined,
+      dispatchCommand: async () => ({ sequence: 0 }),
     },
     terminal: {
       close: async () => undefined,
@@ -296,6 +296,39 @@ describe("Sidebar subagent tree", () => {
     await toggle.click();
     await vi.waitFor(() => {
       expect(document.querySelector('[data-sidebar-thread-id="child-hidden"]')).toBeNull();
+    });
+  });
+
+  it("expands a branch from the keyboard without navigating when the toggle is focused", async () => {
+    const { router } = await renderSidebarApp({
+      initialEntries: ["/root-other"],
+      threads: [
+        makeThread("root-parent", { title: "Root Parent", createdAt: "2026-03-08T05:00:00.000Z" }),
+        makeThread("child-hidden", {
+          title: "Child Hidden",
+          parentThreadId: ThreadId.makeUnsafe("root-parent"),
+          createdAt: "2026-03-08T04:00:00.000Z",
+        }),
+        makeThread("root-other", { title: "Root Other", createdAt: "2026-03-08T06:00:00.000Z" }),
+      ],
+    });
+
+    const toggle = await waitForThreadToggle("root-parent");
+    toggle.focus();
+    toggle.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-sidebar-thread-id="child-hidden"]')).toBeTruthy();
+      expect(router.state.location.pathname).toBe("/root-other");
+      expect(document.querySelector('[data-testid="active-thread-view"]')?.textContent).toBe(
+        "Root Other",
+      );
     });
   });
 

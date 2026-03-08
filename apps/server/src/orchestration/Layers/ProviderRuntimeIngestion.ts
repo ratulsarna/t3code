@@ -18,7 +18,10 @@ import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/isRepo.ts";
-import { resolveRuntimeEventTargetThread } from "../runtimeThreadRouting.ts";
+import {
+  resolveRuntimeEventCleanupThread,
+  resolveRuntimeEventTargetThread,
+} from "../runtimeThreadRouting.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ProviderRuntimeIngestionService,
@@ -743,29 +746,48 @@ const make = Effect.gen(function* () {
     const childThreadId = ThreadId.makeUnsafe(crypto.randomUUID());
     const childCreatedAt = input.event.createdAt;
 
-    yield* orchestrationEngine.dispatch({
-      type: "thread.materialize",
-      commandId: providerCommandId(input.event, "thread-materialize"),
-      threadId: childThreadId,
-      projectId: input.parentThread.projectId,
-      title: resolveChildThreadTitle({
-        name: input.event.payload.name,
-        preview: input.event.payload.preview,
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.materialize",
+        commandId: providerCommandId(input.event, "thread-materialize"),
+        threadId: childThreadId,
+        projectId: input.parentThread.projectId,
+        title: resolveChildThreadTitle({
+          name: input.event.payload.name,
+          preview: input.event.payload.preview,
+          origin: source,
+        }),
+        model: input.parentThread.model,
+        runtimeMode: input.parentThread.runtimeMode,
+        interactionMode: input.parentThread.interactionMode,
+        branch: null,
+        worktreePath: null,
+        providerThreadId,
+        parentThreadId: input.parentThread.id,
         origin: source,
-      }),
-      model: input.parentThread.model,
-      runtimeMode: input.parentThread.runtimeMode,
-      interactionMode: input.parentThread.interactionMode,
-      branch: null,
-      worktreePath: null,
-      providerThreadId,
-      parentThreadId: input.parentThread.id,
-      origin: source,
-      createdAt: childCreatedAt,
-    });
+        createdAt: childCreatedAt,
+      })
+      .pipe(
+        Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+          Effect.logWarning("Suppressed duplicate thread.materialize for child thread", {
+            providerThreadId,
+            detail: error.detail,
+          }),
+        ),
+      );
+
+    const nextReadModel = yield* orchestrationEngine.getReadModel();
+    const resolvedChild =
+      nextReadModel.threads.find((entry) => entry.id === childThreadId) ??
+      nextReadModel.threads.find(
+        (entry) => entry.providerThreadId === providerThreadId && entry.deletedAt === null,
+      );
+    if (!resolvedChild) {
+      return input.parentThread;
+    }
 
     yield* providerSessionDirectory.upsert({
-      threadId: childThreadId,
+      threadId: resolvedChild.id,
       provider: input.event.provider,
       runtimeMode: input.parentThread.runtimeMode,
       status: providerRuntimeStatusFromOrchestrationSession(
@@ -777,14 +799,7 @@ const make = Effect.gen(function* () {
         : {}),
     });
 
-    const nextReadModel = yield* orchestrationEngine.getReadModel();
-    return (
-      nextReadModel.threads.find((entry) => entry.id === childThreadId) ??
-      nextReadModel.threads.find(
-        (entry) => entry.providerThreadId === providerThreadId && entry.deletedAt === null,
-      ) ??
-      input.parentThread
-    );
+    return resolvedChild;
   });
 
   const materializeCollabSubagentThreadsForRuntimeEvent = Effect.fnUntraced(function* (input: {
@@ -846,28 +861,47 @@ const make = Effect.gen(function* () {
         collabLabels.get(providerThreadId) ??
         promptPreviewTitle(prompt) ??
         "Subagent";
-      yield* orchestrationEngine.dispatch({
-        type: "thread.materialize",
-        commandId: providerCommandId(input.event, "thread-materialize-collab"),
-        threadId: childThreadId,
-        projectId: effectiveParentThread.projectId,
-        title: childTitle,
-        model: effectiveParentThread.model,
-        runtimeMode: effectiveParentThread.runtimeMode,
-        interactionMode: effectiveParentThread.interactionMode,
-        branch: null,
-        worktreePath: null,
-        providerThreadId,
-        parentThreadId: effectiveParentThread.id,
-        origin: {
-          kind: "subAgentThreadSpawn",
-          ...(parentProviderThreadId ? { parentProviderThreadId } : {}),
-        },
-        createdAt: input.event.createdAt,
-      });
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.materialize",
+          commandId: providerCommandId(input.event, "thread-materialize-collab"),
+          threadId: childThreadId,
+          projectId: effectiveParentThread.projectId,
+          title: childTitle,
+          model: effectiveParentThread.model,
+          runtimeMode: effectiveParentThread.runtimeMode,
+          interactionMode: effectiveParentThread.interactionMode,
+          branch: null,
+          worktreePath: null,
+          providerThreadId,
+          parentThreadId: effectiveParentThread.id,
+          origin: {
+            kind: "subAgentThreadSpawn",
+            ...(parentProviderThreadId ? { parentProviderThreadId } : {}),
+          },
+          createdAt: input.event.createdAt,
+        })
+        .pipe(
+          Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+            Effect.logWarning("Suppressed duplicate thread.materialize for collab child thread", {
+              providerThreadId,
+              detail: error.detail,
+            }),
+          ),
+        );
+
+      const nextReadModel = yield* orchestrationEngine.getReadModel();
+      const resolvedChild =
+        nextReadModel.threads.find((entry) => entry.id === childThreadId) ??
+        nextReadModel.threads.find(
+          (entry) => entry.providerThreadId === providerThreadId && entry.deletedAt === null,
+        );
+      if (!resolvedChild) {
+        continue;
+      }
 
       yield* providerSessionDirectory.upsert({
-        threadId: childThreadId,
+        threadId: resolvedChild.id,
         provider: input.event.provider,
         runtimeMode: effectiveParentThread.runtimeMode,
         status: providerRuntimeStatusFromOrchestrationSession(
@@ -883,7 +917,7 @@ const make = Effect.gen(function* () {
         yield* orchestrationEngine.dispatch({
           type: "thread.message.import",
           commandId: providerCommandId(input.event, "thread-message-import"),
-          threadId: childThreadId,
+          threadId: resolvedChild.id,
           messageId: MessageId.makeUnsafe(
             `provider-import:${providerThreadId}:${input.event.itemId ?? input.event.eventId}:prompt`,
           ),
@@ -1158,8 +1192,18 @@ const make = Effect.gen(function* () {
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
-      const sourceThread = readModel.threads.find((entry) => entry.id === event.threadId);
-      if (!sourceThread) return;
+      const sourceThread = readModel.threads.find(
+        (entry) => entry.id === event.threadId && entry.deletedAt === null,
+      );
+      const cleanupThread =
+        !sourceThread && event.type === "session.exited"
+          ? resolveRuntimeEventCleanupThread(readModel, event)
+          : undefined;
+      if (!sourceThread && !cleanupThread) return;
+      if (!sourceThread) {
+        yield* clearTurnStateForSession(cleanupThread!.id);
+        return;
+      }
       yield* materializeCollabSubagentThreadsForRuntimeEvent({
         event,
         readModel,
@@ -1174,6 +1218,12 @@ const make = Effect.gen(function* () {
       const nextReadModel = yield* orchestrationEngine.getReadModel();
       const thread = resolveRuntimeEventTargetThread(nextReadModel, event);
       if (!thread) {
+        if (event.type === "session.exited") {
+          const deletedCleanupThread = resolveRuntimeEventCleanupThread(nextReadModel, event);
+          if (deletedCleanupThread) {
+            yield* clearTurnStateForSession(deletedCleanupThread.id);
+          }
+        }
         return;
       }
 

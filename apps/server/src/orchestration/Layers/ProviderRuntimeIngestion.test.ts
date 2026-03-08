@@ -70,6 +70,7 @@ function createProviderServiceHarness() {
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),
+    stopLiveSessionIfPresent: () => Effect.void,
     listSessions: () => Effect.succeed([]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     rollbackConversation: () => unsupported(),
@@ -229,6 +230,39 @@ async function createHarness() {
       emit: provider.emit,
       providerSessionRuntimeRepository,
     };
+  }
+
+  async function materializeChildThread(
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    input: {
+      readonly threadId: string;
+      readonly providerThreadId: string;
+      readonly createdAt?: string;
+      readonly title?: string;
+    },
+  ) {
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.materialize",
+        commandId: CommandId.makeUnsafe(`cmd-thread-materialize-${input.threadId}`),
+        threadId: ThreadId.makeUnsafe(input.threadId),
+        projectId: asProjectId("project-1"),
+        title: input.title ?? "Child Thread",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        providerThreadId: input.providerThreadId,
+        parentThreadId: ThreadId.makeUnsafe("thread-1"),
+        origin: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-thread-root-1",
+        },
+        createdAt,
+      }),
+    );
   }
 
   it("maps turn started/completed events into thread session updates", async () => {
@@ -1846,6 +1880,282 @@ async function createHarness() {
     expect(parentThread?.activities.some((activity) => activity.kind === "turn.plan.updated")).toBe(false);
   });
 
+  it("keeps interleaved parent and child approval activities isolated by thread", async () => {
+    const harness = await createHarness();
+    const createdAt = new Date().toISOString();
+    await materializeChildThread(harness, {
+      threadId: "thread-child-approval-interleaved",
+      providerThreadId: "provider-thread-child-approval-interleaved",
+      createdAt,
+      title: "Child Approval Interleaved",
+    });
+
+    harness.emit({
+      type: "request.opened",
+      eventId: asEventId("evt-parent-approval-opened"),
+      provider: "codex",
+      createdAt,
+      threadId: asThreadId("thread-1"),
+      requestId: ApprovalRequestId.makeUnsafe("req-parent-approval"),
+      payload: {
+        requestType: "command_execution_approval",
+        detail: "pwd",
+      },
+    });
+    harness.emit({
+      type: "request.opened",
+      eventId: asEventId("evt-child-approval-opened"),
+      provider: "codex",
+      createdAt,
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-approval-interleaved",
+      requestId: ApprovalRequestId.makeUnsafe("req-child-approval"),
+      payload: {
+        requestType: "command_execution_approval",
+        detail: "ls",
+      },
+    });
+    harness.emit({
+      type: "request.resolved",
+      eventId: asEventId("evt-child-approval-resolved"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-approval-interleaved",
+      requestId: ApprovalRequestId.makeUnsafe("req-child-approval"),
+      payload: {
+        requestType: "command_execution_approval",
+        decision: "accept",
+      },
+    });
+    harness.emit({
+      type: "request.resolved",
+      eventId: asEventId("evt-parent-approval-resolved"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      requestId: ApprovalRequestId.makeUnsafe("req-parent-approval"),
+      payload: {
+        requestType: "command_execution_approval",
+        decision: "reject",
+      },
+    });
+
+    const parentThread = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "approval.requested" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-parent-approval",
+        ) &&
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "approval.resolved" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-parent-approval",
+        ),
+      2000,
+      "thread-1",
+    );
+    const childThread = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "approval.requested" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-child-approval",
+        ) &&
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "approval.resolved" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-child-approval",
+        ),
+      2000,
+      "thread-child-approval-interleaved",
+    );
+
+    expect(
+      parentThread.activities.some(
+        (activity) =>
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as Record<string, unknown>).requestId === "req-child-approval",
+      ),
+    ).toBe(false);
+    expect(
+      childThread.activities.some(
+        (activity) =>
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as Record<string, unknown>).requestId === "req-parent-approval",
+      ),
+    ).toBe(false);
+    expect(parentThread.providerThreadId ?? null).not.toBe(
+      "provider-thread-child-approval-interleaved",
+    );
+    expect(childThread.providerThreadId).toBe("provider-thread-child-approval-interleaved");
+  });
+
+  it("keeps interleaved parent and child structured user-input activities isolated by thread", async () => {
+    const harness = await createHarness();
+    const createdAt = new Date().toISOString();
+    await materializeChildThread(harness, {
+      threadId: "thread-child-user-input-interleaved",
+      providerThreadId: "provider-thread-child-user-input-interleaved",
+      createdAt,
+      title: "Child User Input Interleaved",
+    });
+
+    harness.emit({
+      type: "user-input.requested",
+      eventId: asEventId("evt-parent-user-input-requested"),
+      provider: "codex",
+      createdAt,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent-user-input"),
+      requestId: ApprovalRequestId.makeUnsafe("req-parent-user-input"),
+      payload: {
+        questions: [
+          {
+            id: "sandbox_mode",
+            header: "Sandbox",
+            question: "Pick a sandbox mode",
+            options: [
+              {
+                label: "read-only",
+                description: "No writes",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    harness.emit({
+      type: "user-input.requested",
+      eventId: asEventId("evt-child-user-input-requested"),
+      provider: "codex",
+      createdAt,
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-user-input-interleaved",
+      turnId: asTurnId("turn-child-user-input"),
+      requestId: ApprovalRequestId.makeUnsafe("req-child-user-input"),
+      payload: {
+        questions: [
+          {
+            id: "sandbox_mode",
+            header: "Sandbox",
+            question: "Pick a sandbox mode",
+            options: [
+              {
+                label: "workspace-write",
+                description: "Allow workspace writes only",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    harness.emit({
+      type: "user-input.resolved",
+      eventId: asEventId("evt-child-user-input-resolved"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-user-input-interleaved",
+      turnId: asTurnId("turn-child-user-input"),
+      requestId: ApprovalRequestId.makeUnsafe("req-child-user-input"),
+      payload: {
+        answers: {
+          sandbox_mode: "workspace-write",
+        },
+      },
+    });
+    harness.emit({
+      type: "user-input.resolved",
+      eventId: asEventId("evt-parent-user-input-resolved"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent-user-input"),
+      requestId: ApprovalRequestId.makeUnsafe("req-parent-user-input"),
+      payload: {
+        answers: {
+          sandbox_mode: "read-only",
+        },
+      },
+    });
+
+    const parentThread = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "user-input.requested" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-parent-user-input",
+        ) &&
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "user-input.resolved" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-parent-user-input",
+        ),
+      2000,
+      "thread-1",
+    );
+    const childThread = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "user-input.requested" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-child-user-input",
+        ) &&
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "user-input.resolved" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-child-user-input",
+        ),
+      2000,
+      "thread-child-user-input-interleaved",
+    );
+
+    expect(
+      parentThread.activities.some(
+        (activity) =>
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as Record<string, unknown>).requestId === "req-child-user-input",
+      ),
+    ).toBe(false);
+    expect(
+      childThread.activities.some(
+        (activity) =>
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as Record<string, unknown>).requestId === "req-parent-user-input",
+      ),
+    ).toBe(false);
+    expect(parentThread.providerThreadId ?? null).not.toBe(
+      "provider-thread-child-user-input-interleaved",
+    );
+    expect(childThread.providerThreadId).toBe("provider-thread-child-user-input-interleaved");
+  });
+
   it("materializes collab subagent receiver threads from tool-call lifecycle events", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -2358,5 +2668,519 @@ async function createHarness() {
       kind: "subAgentThreadSpawn",
       parentProviderThreadId: "provider-thread-child-parent",
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // RAT-121: Child thread lifecycle hardening — regression tests
+  // ---------------------------------------------------------------------------
+
+  it("silently drops runtime events targeting a deleted child and its deleted parent", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await materializeChildThread(harness, {
+      threadId: "thread-child-del",
+      providerThreadId: "del-child-ptid",
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.makeUnsafe("cmd-delete-parent-for-drop-test"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+      }),
+    );
+
+    const readModelAfterDelete = await Effect.runPromise(harness.engine.getReadModel());
+    const parentAfterDelete = readModelAfterDelete.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+    );
+    const childAfterDelete = readModelAfterDelete.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-child-del"),
+    );
+    expect(parentAfterDelete?.deletedAt).not.toBeNull();
+    expect(childAfterDelete?.deletedAt).not.toBeNull();
+
+    const snapshotBefore = await Effect.runPromise(harness.engine.getReadModel());
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-after-delete"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "del-child-ptid",
+      turnId: asTurnId("turn-orphan-1"),
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-delta-after-delete"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "del-child-ptid",
+      turnId: asTurnId("turn-orphan-1"),
+      itemId: asItemId("item-orphan-1"),
+      payload: { streamKind: "assistant_text", delta: "orphaned" },
+    });
+
+    await Effect.runPromise(Effect.sleep("50 millis"));
+
+    const snapshotAfter = await Effect.runPromise(harness.engine.getReadModel());
+    const parentAfterEvents = snapshotAfter.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+    );
+    const childAfterEvents = snapshotAfter.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-child-del"),
+    );
+
+    expect(parentAfterEvents?.session).toEqual(
+      snapshotBefore.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"))?.session,
+    );
+    expect(childAfterEvents?.session).toEqual(
+      snapshotBefore.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-child-del"))
+        ?.session,
+    );
+    expect(childAfterEvents?.messages.length).toBe(
+      snapshotBefore.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-child-del"))
+        ?.messages.length ?? 0,
+    );
+  });
+
+  it("updates session providerThreadId when thread.started arrives with a new ID (resume fallback scenario)", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-session-set-old-ptid"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        session: {
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          providerThreadId: "old-ptid",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.providerThreadId === "old-ptid",
+    );
+
+    harness.emit({
+      type: "thread.started",
+      eventId: asEventId("evt-thread-started-resume-fallback"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "new-ptid",
+      payload: {
+        providerThreadId: "new-ptid",
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.providerThreadId === "new-ptid",
+    );
+    expect(thread.session?.providerThreadId).toBe("new-ptid");
+  });
+
+  it("drops child turn.completed when turnId does not match child activeTurnId", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await materializeChildThread(harness, {
+      threadId: "thread-child-stale-turn",
+      providerThreadId: "child-stale-turn-ptid",
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-child-session-stale-turn"),
+        threadId: ThreadId.makeUnsafe("thread-child-stale-turn"),
+        session: {
+          threadId: ThreadId.makeUnsafe("thread-child-stale-turn"),
+          status: "ready",
+          providerName: "codex",
+          providerThreadId: "child-stale-turn-ptid",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-child-turn-started-active"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "child-stale-turn-ptid",
+      turnId: asTurnId("child-turn-active"),
+    });
+
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "child-turn-active",
+      2000,
+      "thread-child-stale-turn",
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-child-turn-completed-stale"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "child-stale-turn-ptid",
+      turnId: asTurnId("child-turn-stale"),
+      payload: { state: "completed" },
+    });
+
+    await Effect.runPromise(Effect.sleep("50 millis"));
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const childThread = readModel.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-child-stale-turn"),
+    );
+    expect(childThread?.session?.activeTurnId).toBe("child-turn-active");
+    expect(childThread?.session?.status).toBe("running");
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-child-turn-completed-correct"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "child-stale-turn-ptid",
+      turnId: asTurnId("child-turn-active"),
+      payload: { state: "completed" },
+    });
+
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === null && thread.session?.status === "ready",
+      2000,
+      "thread-child-stale-turn",
+    );
+  });
+
+  it("child session.exited only affects child thread session, not parent", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await materializeChildThread(harness, {
+      threadId: "thread-child-exited",
+      providerThreadId: "child-exited-ptid",
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-child-session-exited-setup"),
+        threadId: ThreadId.makeUnsafe("thread-child-exited"),
+        session: {
+          threadId: ThreadId.makeUnsafe("thread-child-exited"),
+          status: "running",
+          providerName: "codex",
+          providerThreadId: "child-exited-ptid",
+          runtimeMode: "approval-required",
+          activeTurnId: TurnId.makeUnsafe("child-turn-x"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-child-session-exited"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "child-exited-ptid",
+    });
+
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "stopped",
+      2000,
+      "thread-child-exited",
+    );
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const child = readModel.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-child-exited"),
+    );
+    const parent = readModel.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+    );
+    expect(child?.session?.status).toBe("stopped");
+    expect(child?.session?.activeTurnId).toBeNull();
+    expect(parent?.session?.status).toBe("ready");
+  });
+
+  it("child runtime.error only affects child thread, not parent", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await materializeChildThread(harness, {
+      threadId: "thread-child-error",
+      providerThreadId: "child-error-ptid",
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-child-session-error-setup"),
+        threadId: ThreadId.makeUnsafe("thread-child-error"),
+        session: {
+          threadId: ThreadId.makeUnsafe("thread-child-error"),
+          status: "running",
+          providerName: "codex",
+          providerThreadId: "child-error-ptid",
+          runtimeMode: "approval-required",
+          activeTurnId: TurnId.makeUnsafe("child-turn-err"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("evt-child-runtime-error"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "child-error-ptid",
+      turnId: asTurnId("child-turn-err"),
+      payload: {
+        message: "child process failed",
+      },
+    });
+
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "error",
+      2000,
+      "thread-child-error",
+    );
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const child = readModel.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-child-error"),
+    );
+    const parent = readModel.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+    );
+    expect(child?.session?.status).toBe("error");
+    expect(child?.session?.lastError).toBe("child process failed");
+    expect(parent?.session?.status).toBe("ready");
+    expect(parent?.session?.lastError).toBeNull();
+  });
+
+  it("re-materializes a child thread with a previously-deleted providerThreadId", async () => {
+    const harness = await createHarness();
+
+    await materializeChildThread(harness, {
+      threadId: "thread-child-reuse",
+      providerThreadId: "reuse-ptid",
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.makeUnsafe("cmd-delete-parent-for-reuse"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+      }),
+    );
+
+    const readModelAfterDelete = await Effect.runPromise(harness.engine.getReadModel());
+    expect(
+      readModelAfterDelete.threads.find(
+        (entry) => entry.id === ThreadId.makeUnsafe("thread-child-reuse"),
+      )?.deletedAt,
+    ).not.toBeNull();
+
+    const newCreatedAt = new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.makeUnsafe("cmd-thread-create-new-parent"),
+        threadId: ThreadId.makeUnsafe("thread-2"),
+        projectId: asProjectId("project-1"),
+        title: "Thread 2",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: newCreatedAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-session-set-new-parent"),
+        threadId: ThreadId.makeUnsafe("thread-2"),
+        session: {
+          threadId: ThreadId.makeUnsafe("thread-2"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: newCreatedAt,
+        },
+        createdAt: newCreatedAt,
+      }),
+    );
+
+    harness.emit({
+      type: "thread.started",
+      eventId: asEventId("evt-thread-started-reuse-ptid"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-2"),
+      providerThreadId: "reuse-ptid",
+      payload: {
+        providerThreadId: "reuse-ptid",
+        source: {
+          kind: "subAgentThreadSpawn",
+          subagent: {
+            thread_spawn: {
+              parent_thread_id: "provider-thread-new-parent",
+              depth: 1,
+            },
+          },
+        },
+      },
+    });
+
+    const newChild = await (async () => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const readModel = await Effect.runPromise(harness.engine.getReadModel());
+        const found = readModel.threads.find(
+          (thread) =>
+            thread.providerThreadId === "reuse-ptid" &&
+            thread.deletedAt === null &&
+            thread.id !== "thread-child-reuse",
+        );
+        if (found) {
+          return found;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("Timed out waiting for re-materialized child thread");
+    })();
+
+    expect(newChild.deletedAt).toBeNull();
+    expect(newChild.parentThreadId).toBe("thread-2");
+    expect(newChild.providerThreadId).toBe("reuse-ptid");
+  });
+
+  it("handles concurrent thread.started events for the same providerThreadId without crashing", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await Promise.all([
+      Promise.resolve().then(() =>
+        harness.emit({
+          type: "thread.started",
+          eventId: asEventId("evt-thread-started-concurrent-1"),
+          provider: "codex",
+          createdAt: now,
+          threadId: asThreadId("thread-1"),
+          providerThreadId: "concurrent-ptid-1",
+          payload: {
+            providerThreadId: "concurrent-ptid-1",
+            source: {
+              kind: "subAgentThreadSpawn",
+              subagent: {
+                thread_spawn: {
+                  parent_thread_id: "provider-thread-root-1",
+                  depth: 1,
+                },
+              },
+            },
+          },
+        }),
+      ),
+      Promise.resolve().then(() =>
+        harness.emit({
+          type: "thread.started",
+          eventId: asEventId("evt-thread-started-concurrent-2"),
+          provider: "codex",
+          createdAt: now,
+          threadId: asThreadId("thread-1"),
+          providerThreadId: "concurrent-ptid-1",
+          payload: {
+            providerThreadId: "concurrent-ptid-1",
+            source: {
+              kind: "subAgentThreadSpawn",
+              subagent: {
+                thread_spawn: {
+                  parent_thread_id: "provider-thread-root-1",
+                  depth: 1,
+                },
+              },
+            },
+          },
+        }),
+      ),
+    ]);
+
+    await Effect.runPromise(Effect.sleep("100 millis"));
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const matchingChildren = readModel.threads.filter(
+      (thread) => thread.providerThreadId === "concurrent-ptid-1" && thread.deletedAt === null,
+    );
+    expect(matchingChildren.length).toBe(1);
+    const runtimes = await Effect.runPromise(harness.providerSessionRuntimeRepository.list());
+    const matchingBindings = runtimes.filter((runtime) => {
+      const payload = runtime.resumeCursor;
+      return (
+        payload !== null &&
+        typeof payload === "object" &&
+        !Array.isArray(payload) &&
+        "threadId" in payload &&
+        payload.threadId === "concurrent-ptid-1"
+      );
+    });
+    expect(matchingBindings).toHaveLength(1);
+    expect(matchingBindings[0]?.threadId).toBe(matchingChildren[0]?.id);
+
+    // Verify pipeline is still functional by routing a turn event to the child
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-after-concurrent"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "concurrent-ptid-1",
+      turnId: asTurnId("turn-concurrent-verify"),
+    });
+
+    const child = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "turn-concurrent-verify",
+      2000,
+      matchingChildren[0]!.id,
+    );
+    expect(child.session?.status).toBe("running");
   });
 });

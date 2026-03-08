@@ -34,7 +34,8 @@ type ProviderIntentEvent = Extract<
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
-      | "thread.session-stop-requested";
+      | "thread.session-stop-requested"
+      | "thread.deleted";
   }
 >;
 
@@ -632,6 +633,12 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const processThreadDeleted = Effect.fnUntraced(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.deleted" }>,
+  ) {
+    yield* providerService.stopLiveSessionIfPresent({ threadId: event.payload.threadId });
+  });
+
   const processDomainEvent = (event: ProviderIntentEvent) =>
     Effect.gen(function* () {
       switch (event.type) {
@@ -657,6 +664,9 @@ const make = Effect.gen(function* () {
           return;
         case "thread.session-stop-requested":
           yield* processSessionStopRequested(event);
+          return;
+        case "thread.deleted":
+          yield* processThreadDeleted(event);
           return;
       }
     });
@@ -690,7 +700,8 @@ const make = Effect.gen(function* () {
           event.type !== "thread.turn-interrupt-requested" &&
           event.type !== "thread.approval-response-requested" &&
           event.type !== "thread.user-input-response-requested" &&
-          event.type !== "thread.session-stop-requested"
+          event.type !== "thread.session-stop-requested" &&
+          event.type !== "thread.deleted"
         ) {
           return Effect.void;
         }

@@ -489,6 +489,10 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
 
         case "thread.deleted": {
           attachmentSideEffects.deletedThreadIds.add(event.payload.threadId);
+          // Durably clean up provider session binding within the projection transaction.
+          yield* sql`DELETE FROM provider_session_runtime WHERE thread_id = ${event.payload.threadId}`.pipe(
+            Effect.mapError(toPersistenceSqlError("projection.thread.deleted.cleanupBinding")),
+          );
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
           });

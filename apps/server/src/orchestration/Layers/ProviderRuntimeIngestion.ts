@@ -4,6 +4,8 @@ import {
   CommandId,
   MessageId,
   type OrchestrationEvent,
+  type OrchestrationSession,
+  type OrchestrationReadModel,
   CheckpointRef,
   ThreadId,
   TurnId,
@@ -13,6 +15,7 @@ import {
 import { Cache, Cause, Duration, Effect, Layer, Option, Queue, Ref, Stream } from "effect";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/isRepo.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -102,6 +105,48 @@ function runtimePayloadRecord(event: ProviderRuntimeEvent): Record<string, unkno
     return undefined;
   }
   return payload as Record<string, unknown>;
+}
+
+function trimSingleLineTitle(value: string | null | undefined): string | undefined {
+  const trimmed = value?.replace(/\s+/g, " ").trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.slice(0, 80);
+}
+
+function providerRuntimeStatusFromOrchestrationSession(
+  status: OrchestrationSession["status"],
+): "starting" | "running" | "stopped" | "error" {
+  switch (status) {
+    case "starting":
+      return "starting";
+    case "stopped":
+    case "idle":
+      return "stopped";
+    case "error":
+      return "error";
+    case "running":
+    case "ready":
+    case "interrupted":
+    default:
+      return "running";
+  }
+}
+
+function resolveChildThreadTitle(input: {
+  readonly name?: string | null | undefined;
+  readonly preview?: string | null | undefined;
+  readonly origin:
+    | (NonNullable<Extract<ProviderRuntimeEvent, { type: "thread.started" }>["payload"]["source"]>)
+    | undefined;
+}): string {
+  return (
+    trimSingleLineTitle(input.name) ??
+    trimSingleLineTitle(input.origin?.agentNickname) ??
+    trimSingleLineTitle(input.preview) ??
+    "Subagent"
+  );
 }
 
 function normalizeRuntimeTurnState(
@@ -486,6 +531,7 @@ function runtimeEventToActivities(
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
+  const providerSessionDirectory = yield* ProviderSessionDirectory;
 
   const assistantDeliveryModeRef = yield* Ref.make<AssistantDeliveryMode>(
     DEFAULT_ASSISTANT_DELIVERY_MODE,
@@ -523,6 +569,76 @@ const make = Effect.gen(function* () {
       return false;
     }
     return isGitRepository(workspaceCwd);
+  });
+
+  const materializeSubagentThreadForRuntimeEvent = Effect.fnUntraced(function* (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly readModel: OrchestrationReadModel;
+    readonly parentThread: OrchestrationReadModel["threads"][number];
+  }) {
+    if (input.event.type !== "thread.started") {
+      return input.parentThread;
+    }
+
+    const source = input.event.payload.source;
+    const providerThreadId = input.event.payload.providerThreadId;
+    if (!providerThreadId || source?.kind !== "subAgentThreadSpawn") {
+      return input.parentThread;
+    }
+
+    const existingChild = input.readModel.threads.find(
+      (entry) => entry.providerThreadId === providerThreadId && entry.deletedAt === null,
+    );
+    if (existingChild) {
+      return existingChild;
+    }
+
+    const parentBinding = yield* providerSessionDirectory.getBinding(input.parentThread.id);
+    const childThreadId = ThreadId.makeUnsafe(crypto.randomUUID());
+    const childCreatedAt = input.event.createdAt;
+
+    yield* orchestrationEngine.dispatch({
+      type: "thread.materialize",
+      commandId: providerCommandId(input.event, "thread-materialize"),
+      threadId: childThreadId,
+      projectId: input.parentThread.projectId,
+      title: resolveChildThreadTitle({
+        name: input.event.payload.name,
+        preview: input.event.payload.preview,
+        origin: source,
+      }),
+      model: input.parentThread.model,
+      runtimeMode: input.parentThread.runtimeMode,
+      interactionMode: input.parentThread.interactionMode,
+      branch: null,
+      worktreePath: null,
+      providerThreadId,
+      parentThreadId: input.parentThread.id,
+      origin: source,
+      createdAt: childCreatedAt,
+    });
+
+    yield* providerSessionDirectory.upsert({
+      threadId: childThreadId,
+      provider: input.event.provider,
+      runtimeMode: input.parentThread.runtimeMode,
+      status: providerRuntimeStatusFromOrchestrationSession(
+        input.parentThread.session?.status ?? "ready",
+      ),
+      resumeCursor: { threadId: providerThreadId },
+      ...(Option.isSome(parentBinding) && parentBinding.value.runtimePayload !== null
+        ? { runtimePayload: parentBinding.value.runtimePayload }
+        : {}),
+    });
+
+    const nextReadModel = yield* orchestrationEngine.getReadModel();
+    return (
+      nextReadModel.threads.find((entry) => entry.id === childThreadId) ??
+      nextReadModel.threads.find(
+        (entry) => entry.providerThreadId === providerThreadId && entry.deletedAt === null,
+      ) ??
+      input.parentThread
+    );
   });
 
   const rememberAssistantMessageId = (
@@ -787,8 +903,13 @@ const make = Effect.gen(function* () {
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
-      const thread = readModel.threads.find((entry) => entry.id === event.threadId);
-      if (!thread) return;
+      const parentThread = readModel.threads.find((entry) => entry.id === event.threadId);
+      if (!parentThread) return;
+      const thread = yield* materializeSubagentThreadForRuntimeEvent({
+        event,
+        readModel,
+        parentThread,
+      });
 
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
@@ -864,6 +985,10 @@ const make = Effect.gen(function* () {
               : status === "ready"
               ? null
               : (thread.session?.lastError ?? null);
+        const nextProviderThreadId =
+          event.type === "thread.started"
+            ? (event.payload.providerThreadId ?? thread.session?.providerThreadId ?? null)
+            : (thread.session?.providerThreadId ?? null);
 
         if (shouldApplyThreadLifecycle) {
           yield* orchestrationEngine.dispatch({
@@ -874,6 +999,8 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status,
               providerName: event.provider,
+              providerSessionId: thread.session?.providerSessionId ?? null,
+              providerThreadId: nextProviderThreadId,
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
               lastError,
@@ -1038,6 +1165,8 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status: "error",
               providerName: event.provider,
+              providerSessionId: thread.session?.providerSessionId ?? null,
+              providerThreadId: thread.session?.providerThreadId ?? null,
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,

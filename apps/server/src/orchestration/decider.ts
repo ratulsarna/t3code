@@ -15,6 +15,10 @@ import {
 
 const nowIso = () => new Date().toISOString();
 const DEFAULT_ASSISTANT_DELIVERY_MODE = "buffered" as const;
+type MaterializableThreadCommand = Extract<
+  OrchestrationCommand,
+  { type: "thread.create" | "thread.materialize" }
+>;
 
 const defaultMetadata: Omit<OrchestrationEvent, "sequence" | "type" | "payload"> = {
   eventId: crypto.randomUUID() as OrchestrationEvent["eventId"],
@@ -44,6 +48,37 @@ function withEventBase(
     commandId: input.commandId,
     correlationId: input.commandId,
     metadata: input.metadata ?? {},
+  };
+}
+
+function toThreadCreatedPayload(input: {
+  readonly threadId: MaterializableThreadCommand["threadId"];
+  readonly projectId: MaterializableThreadCommand["projectId"];
+  readonly title: string;
+  readonly model: string;
+  readonly runtimeMode: "approval-required" | "full-access";
+  readonly interactionMode: "default" | "plan";
+  readonly branch: string | null;
+  readonly worktreePath: string | null;
+  readonly createdAt: string;
+  readonly providerThreadId?: string | null | undefined;
+  readonly parentThreadId?: MaterializableThreadCommand["threadId"] | null | undefined;
+  readonly origin?: import("@t3tools/contracts").ThreadOrigin | null | undefined;
+}) {
+  return {
+    threadId: input.threadId,
+    projectId: input.projectId,
+    title: input.title,
+    model: input.model,
+    runtimeMode: input.runtimeMode,
+    interactionMode: input.interactionMode,
+    branch: input.branch,
+    worktreePath: input.worktreePath,
+    ...(input.providerThreadId !== undefined ? { providerThreadId: input.providerThreadId } : {}),
+    ...(input.parentThreadId !== undefined ? { parentThreadId: input.parentThreadId } : {}),
+    ...(input.origin !== undefined ? { origin: input.origin } : {}),
+    createdAt: input.createdAt,
+    updatedAt: input.createdAt,
   };
 }
 
@@ -152,18 +187,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandId: command.commandId,
         }),
         type: "thread.created",
-        payload: {
-          threadId: command.threadId,
-          projectId: command.projectId,
-          title: command.title,
-          model: command.model,
-          runtimeMode: command.runtimeMode,
-          interactionMode: command.interactionMode,
-          branch: command.branch,
-          worktreePath: command.worktreePath,
-          createdAt: command.createdAt,
-          updatedAt: command.createdAt,
-        },
+        payload: toThreadCreatedPayload(command),
+      };
+    }
+
+    case "thread.materialize": {
+      yield* requireProject({
+        readModel,
+        command,
+        projectId: command.projectId,
+      });
+      yield* requireThreadAbsent({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.created",
+        payload: toThreadCreatedPayload(command),
       };
     }
 

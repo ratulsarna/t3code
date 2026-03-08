@@ -245,6 +245,93 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
     ),
   );
 
+  it.effect("projects provider-backed thread identity fields", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = new Date().toISOString();
+
+      yield* eventStore.append({
+        type: "project.created",
+        eventId: EventId.makeUnsafe("evt-project-provider-thread"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.makeUnsafe("project-provider-thread"),
+        occurredAt: now,
+        commandId: CommandId.makeUnsafe("cmd-project-provider-thread"),
+        causationEventId: null,
+        correlationId: CommandId.makeUnsafe("cmd-project-provider-thread"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.makeUnsafe("project-provider-thread"),
+          title: "Provider Project",
+          workspaceRoot: "/tmp/provider-project",
+          defaultModel: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.makeUnsafe("evt-thread-provider-thread"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.makeUnsafe("thread-provider-thread"),
+        occurredAt: now,
+        commandId: CommandId.makeUnsafe("cmd-thread-provider-thread"),
+        causationEventId: null,
+        correlationId: CommandId.makeUnsafe("cmd-thread-provider-thread"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.makeUnsafe("thread-provider-thread"),
+          projectId: ProjectId.makeUnsafe("project-provider-thread"),
+          title: "Provider Child Thread",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          providerThreadId: "provider-thread-child-1",
+          parentThreadId: ThreadId.makeUnsafe("thread-parent-1"),
+          origin: {
+            kind: "subAgentThreadSpawn",
+            parentProviderThreadId: "provider-thread-root-1",
+            depth: 1,
+            agentNickname: "Confucius",
+            agentRole: "reviewer",
+          },
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      const rows = yield* sql<{
+        readonly providerThreadId: string | null;
+        readonly parentThreadId: string | null;
+        readonly originJson: string | null;
+      }>`
+        SELECT
+          provider_thread_id AS "providerThreadId",
+          parent_thread_id AS "parentThreadId",
+          origin_json AS "originJson"
+        FROM projection_threads
+        WHERE thread_id = 'thread-provider-thread'
+      `;
+
+      assert.deepEqual(rows, [
+        {
+          providerThreadId: "provider-thread-child-1",
+          parentThreadId: "thread-parent-1",
+          originJson:
+            '{"kind":"subAgentThreadSpawn","parentProviderThreadId":"provider-thread-root-1","depth":1,"agentNickname":"Confucius","agentRole":"reviewer"}',
+        },
+      ]);
+    }),
+  );
+
   it.effect("preserves mixed image attachment metadata as-is", () =>
     Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "t3-projection-attachments-"))).pipe(
       Effect.flatMap((stateDir) =>

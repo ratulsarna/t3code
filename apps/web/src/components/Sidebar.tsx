@@ -1028,7 +1028,10 @@ export default function Sidebar() {
           <SidebarMenu>
             {projects.map((project) => {
               const projectThreads = threads
-                .filter((thread) => thread.projectId === project.id)
+                .filter(
+                  (thread) =>
+                    thread.projectId === project.id && (thread.parentThreadId ?? null) === null,
+                )
                 .toSorted((a, b) => {
                   const byDate = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
                   if (byDate !== 0) return byDate;

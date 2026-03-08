@@ -60,6 +60,9 @@ function makeReadModelThread(overrides: Partial<OrchestrationReadModel["threads"
     interactionMode: DEFAULT_INTERACTION_MODE,
     branch: null,
     worktreePath: null,
+    providerThreadId: null,
+    parentThreadId: null,
+    origin: null,
     latestTurn: null,
     createdAt: "2026-02-27T00:00:00.000Z",
     updatedAt: "2026-02-27T00:00:00.000Z",
@@ -146,5 +149,57 @@ describe("store read model sync", () => {
     const next = syncServerReadModel(initialState, readModel);
 
     expect(next.threads[0]?.model).toBe(DEFAULT_MODEL_BY_PROVIDER.codex);
+  });
+
+  it("prefers the thread-level provider id when both thread and session ids are present", () => {
+    const initialState = makeState(makeThread());
+    const readModel = makeReadModel(
+      makeReadModelThread({
+        providerThreadId: "thread-level-provider-thread",
+        parentThreadId: ThreadId.makeUnsafe("thread-parent-1"),
+        session: {
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          providerSessionId: null,
+          providerThreadId: "session-level-provider-thread",
+          runtimeMode: DEFAULT_RUNTIME_MODE,
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-02-27T00:00:00.000Z",
+        },
+      }),
+    );
+
+    const next = syncServerReadModel(initialState, readModel);
+
+    expect(next.threads[0]?.codexThreadId).toBe("thread-level-provider-thread");
+    expect(next.threads[0]?.parentThreadId).toBe("thread-parent-1");
+  });
+
+  it("falls back to the session provider id when the thread row has none", () => {
+    const initialState = makeState(makeThread());
+    const readModel = makeReadModel(
+      makeReadModelThread({
+        providerThreadId: null,
+        parentThreadId: ThreadId.makeUnsafe("thread-parent-1"),
+        session: {
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          providerSessionId: null,
+          providerThreadId: "session-level-provider-thread",
+          runtimeMode: DEFAULT_RUNTIME_MODE,
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-02-27T00:00:00.000Z",
+        },
+      }),
+    );
+
+    const next = syncServerReadModel(initialState, readModel);
+
+    expect(next.threads[0]?.codexThreadId).toBe("session-level-provider-thread");
+    expect(next.threads[0]?.parentThreadId).toBe("thread-parent-1");
   });
 });

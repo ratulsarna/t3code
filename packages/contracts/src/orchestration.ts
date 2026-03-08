@@ -1,5 +1,6 @@
 import { Option, Schema, SchemaIssue, Struct } from "effect";
 import { ProviderModelOptions } from "./model";
+import { ThreadOrigin } from "./threadOrigin";
 import {
   ApprovalRequestId,
   CheckpointRef,
@@ -178,6 +179,8 @@ export const OrchestrationSession = Schema.Struct({
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
   providerName: Schema.NullOr(TrimmedNonEmptyString),
+  providerSessionId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  providerThreadId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => DEFAULT_RUNTIME_MODE)),
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
@@ -256,6 +259,9 @@ export const OrchestrationThread = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  providerThreadId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  origin: Schema.optional(Schema.NullOr(ThreadOrigin)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -324,6 +330,25 @@ const ThreadDeleteCommand = Schema.Struct({
   type: Schema.Literal("thread.delete"),
   commandId: CommandId,
   threadId: ThreadId,
+});
+
+const ThreadMaterializeCommand = Schema.Struct({
+  type: Schema.Literal("thread.materialize"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  projectId: ProjectId,
+  title: TrimmedNonEmptyString,
+  model: TrimmedNonEmptyString,
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode.pipe(
+    Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
+  ),
+  branch: Schema.NullOr(TrimmedNonEmptyString),
+  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  providerThreadId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  origin: Schema.optional(Schema.NullOr(ThreadOrigin)),
+  createdAt: IsoDateTime,
 });
 
 const ThreadMetaUpdateCommand = Schema.Struct({
@@ -538,6 +563,7 @@ const ThreadRevertCompleteCommand = Schema.Struct({
 });
 
 const InternalOrchestrationCommand = Schema.Union([
+  ThreadMaterializeCommand,
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
@@ -617,6 +643,9 @@ export const ThreadCreatedPayload = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  providerThreadId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  origin: Schema.optional(Schema.NullOr(ThreadOrigin)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

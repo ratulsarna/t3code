@@ -39,6 +39,7 @@ describe("ProviderRuntimeEvent", () => {
       provider: "codex",
       createdAt: "2026-02-28T00:00:00.000Z",
       threadId: "thread-1",
+      providerThreadId: "provider-thread-1",
       turnId: "turn-1",
       payload: {
         planMarkdown: "# Ship it",
@@ -49,6 +50,7 @@ describe("ProviderRuntimeEvent", () => {
     if (parsed.type !== "turn.proposed.completed") {
       throw new Error("expected turn.proposed.completed");
     }
+    expect(parsed.providerThreadId).toBe("provider-thread-1");
     expect(parsed.payload.planMarkdown).toBe("# Ship it");
   });
 
@@ -120,6 +122,7 @@ describe("ProviderRuntimeEvent", () => {
       provider: "codex",
       createdAt: "2026-02-28T00:00:04.000Z",
       threadId: "thread-1",
+      providerThreadId: "provider-thread-1",
       payload: {
         providerThreadId: "provider-thread-1",
         name: null,
@@ -142,6 +145,7 @@ describe("ProviderRuntimeEvent", () => {
     if (parsed.type !== "thread.started") {
       throw new Error("expected thread.started");
     }
+    expect(parsed.providerThreadId).toBe("provider-thread-1");
     expect(parsed.payload.providerThreadId).toBe("provider-thread-1");
     expect(parsed.payload.name).toBeNull();
     expect(parsed.payload.preview).toBe("");
@@ -216,6 +220,26 @@ describe("ProviderRuntimeEvent", () => {
         payload: { delta: "legacy" },
       }),
     ).toThrow();
+  });
+
+  it("decodes top-level providerThreadId on non-thread-start runtime events", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "item.completed",
+      eventId: "event-item-completed-1",
+      provider: "codex",
+      createdAt: "2026-02-28T00:00:08.000Z",
+      threadId: "thread-1",
+      providerThreadId: "provider-thread-child-1",
+      itemId: "item-1",
+      payload: {
+        itemType: "assistant_message",
+        title: "Assistant message",
+        status: "completed",
+      },
+    });
+
+    expect(parsed.type).toBe("item.completed");
+    expect(parsed.providerThreadId).toBe("provider-thread-child-1");
   });
 
   it("rejects empty branded canonical ids", () => {

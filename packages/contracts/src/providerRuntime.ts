@@ -238,6 +238,7 @@ const ProviderRuntimeEventBase = Schema.Struct({
   eventId: EventId,
   provider: ProviderKind,
   threadId: ThreadId,
+  providerThreadId: Schema.optional(TrimmedNonEmptyStringSchema),
   createdAt: IsoDateTime,
   turnId: Schema.optional(TurnId),
   itemId: Schema.optional(RuntimeItemId),

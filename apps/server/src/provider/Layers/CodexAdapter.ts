@@ -598,6 +598,18 @@ function codexEventMessage(payload: Record<string, unknown> | undefined): Record
   return asObject(payload?.msg);
 }
 
+function providerThreadIdFromPayload(payload: Record<string, unknown> | undefined): string | undefined {
+  const thread = asObject(payload?.thread);
+  const msg = codexEventMessage(payload);
+  return (
+    normalizeNonEmptyString(asString(thread?.id)) ??
+    normalizeNonEmptyString(asString(payload?.threadId)) ??
+    normalizeNonEmptyString(asString(msg?.thread_id)) ??
+    normalizeNonEmptyString(asString(msg?.threadId)) ??
+    normalizeNonEmptyString(asString(payload?.conversationId))
+  );
+}
+
 function codexEventBase(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
@@ -650,10 +662,13 @@ function runtimeEventBase(
   canonicalThreadId: ThreadId,
 ): Omit<ProviderRuntimeEvent, "type" | "payload"> {
   const refs = providerRefsFromEvent(event);
+  const payload = asObject(event.payload);
+  const providerThreadId = providerThreadIdFromPayload(payload);
   return {
     eventId: event.id,
     provider: event.provider,
     threadId: canonicalThreadId,
+    ...(providerThreadId ? { providerThreadId } : {}),
     createdAt: event.createdAt,
     ...(event.turnId ? { turnId: event.turnId } : {}),
     ...(event.itemId ? { itemId: asRuntimeItemId(event.itemId) } : {}),

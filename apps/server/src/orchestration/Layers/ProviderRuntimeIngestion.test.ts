@@ -231,6 +231,39 @@ async function createHarness() {
     };
   }
 
+  async function materializeChildThread(
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    input: {
+      readonly threadId: string;
+      readonly providerThreadId: string;
+      readonly createdAt?: string;
+      readonly title?: string;
+    },
+  ) {
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.materialize",
+        commandId: CommandId.makeUnsafe(`cmd-thread-materialize-${input.threadId}`),
+        threadId: ThreadId.makeUnsafe(input.threadId),
+        projectId: asProjectId("project-1"),
+        title: input.title ?? "Child Thread",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        providerThreadId: input.providerThreadId,
+        parentThreadId: ThreadId.makeUnsafe("thread-1"),
+        origin: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-thread-root-1",
+        },
+        createdAt,
+      }),
+    );
+  }
+
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -1844,6 +1877,282 @@ async function createHarness() {
     const parentThread = readModel.threads.find((thread) => thread.id === asThreadId("thread-1"));
     expect(parentThread?.messages).toHaveLength(0);
     expect(parentThread?.activities.some((activity) => activity.kind === "turn.plan.updated")).toBe(false);
+  });
+
+  it("keeps interleaved parent and child approval activities isolated by thread", async () => {
+    const harness = await createHarness();
+    const createdAt = new Date().toISOString();
+    await materializeChildThread(harness, {
+      threadId: "thread-child-approval-interleaved",
+      providerThreadId: "provider-thread-child-approval-interleaved",
+      createdAt,
+      title: "Child Approval Interleaved",
+    });
+
+    harness.emit({
+      type: "request.opened",
+      eventId: asEventId("evt-parent-approval-opened"),
+      provider: "codex",
+      createdAt,
+      threadId: asThreadId("thread-1"),
+      requestId: ApprovalRequestId.makeUnsafe("req-parent-approval"),
+      payload: {
+        requestType: "command_execution_approval",
+        detail: "pwd",
+      },
+    });
+    harness.emit({
+      type: "request.opened",
+      eventId: asEventId("evt-child-approval-opened"),
+      provider: "codex",
+      createdAt,
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-approval-interleaved",
+      requestId: ApprovalRequestId.makeUnsafe("req-child-approval"),
+      payload: {
+        requestType: "command_execution_approval",
+        detail: "ls",
+      },
+    });
+    harness.emit({
+      type: "request.resolved",
+      eventId: asEventId("evt-child-approval-resolved"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-approval-interleaved",
+      requestId: ApprovalRequestId.makeUnsafe("req-child-approval"),
+      payload: {
+        requestType: "command_execution_approval",
+        decision: "accept",
+      },
+    });
+    harness.emit({
+      type: "request.resolved",
+      eventId: asEventId("evt-parent-approval-resolved"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      requestId: ApprovalRequestId.makeUnsafe("req-parent-approval"),
+      payload: {
+        requestType: "command_execution_approval",
+        decision: "reject",
+      },
+    });
+
+    const parentThread = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "approval.requested" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-parent-approval",
+        ) &&
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "approval.resolved" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-parent-approval",
+        ),
+      2000,
+      "thread-1",
+    );
+    const childThread = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "approval.requested" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-child-approval",
+        ) &&
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "approval.resolved" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-child-approval",
+        ),
+      2000,
+      "thread-child-approval-interleaved",
+    );
+
+    expect(
+      parentThread.activities.some(
+        (activity) =>
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as Record<string, unknown>).requestId === "req-child-approval",
+      ),
+    ).toBe(false);
+    expect(
+      childThread.activities.some(
+        (activity) =>
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as Record<string, unknown>).requestId === "req-parent-approval",
+      ),
+    ).toBe(false);
+    expect(parentThread.providerThreadId ?? null).not.toBe(
+      "provider-thread-child-approval-interleaved",
+    );
+    expect(childThread.providerThreadId).toBe("provider-thread-child-approval-interleaved");
+  });
+
+  it("keeps interleaved parent and child structured user-input activities isolated by thread", async () => {
+    const harness = await createHarness();
+    const createdAt = new Date().toISOString();
+    await materializeChildThread(harness, {
+      threadId: "thread-child-user-input-interleaved",
+      providerThreadId: "provider-thread-child-user-input-interleaved",
+      createdAt,
+      title: "Child User Input Interleaved",
+    });
+
+    harness.emit({
+      type: "user-input.requested",
+      eventId: asEventId("evt-parent-user-input-requested"),
+      provider: "codex",
+      createdAt,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent-user-input"),
+      requestId: ApprovalRequestId.makeUnsafe("req-parent-user-input"),
+      payload: {
+        questions: [
+          {
+            id: "sandbox_mode",
+            header: "Sandbox",
+            question: "Pick a sandbox mode",
+            options: [
+              {
+                label: "read-only",
+                description: "No writes",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    harness.emit({
+      type: "user-input.requested",
+      eventId: asEventId("evt-child-user-input-requested"),
+      provider: "codex",
+      createdAt,
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-user-input-interleaved",
+      turnId: asTurnId("turn-child-user-input"),
+      requestId: ApprovalRequestId.makeUnsafe("req-child-user-input"),
+      payload: {
+        questions: [
+          {
+            id: "sandbox_mode",
+            header: "Sandbox",
+            question: "Pick a sandbox mode",
+            options: [
+              {
+                label: "workspace-write",
+                description: "Allow workspace writes only",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    harness.emit({
+      type: "user-input.resolved",
+      eventId: asEventId("evt-child-user-input-resolved"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-user-input-interleaved",
+      turnId: asTurnId("turn-child-user-input"),
+      requestId: ApprovalRequestId.makeUnsafe("req-child-user-input"),
+      payload: {
+        answers: {
+          sandbox_mode: "workspace-write",
+        },
+      },
+    });
+    harness.emit({
+      type: "user-input.resolved",
+      eventId: asEventId("evt-parent-user-input-resolved"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent-user-input"),
+      requestId: ApprovalRequestId.makeUnsafe("req-parent-user-input"),
+      payload: {
+        answers: {
+          sandbox_mode: "read-only",
+        },
+      },
+    });
+
+    const parentThread = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "user-input.requested" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-parent-user-input",
+        ) &&
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "user-input.resolved" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-parent-user-input",
+        ),
+      2000,
+      "thread-1",
+    );
+    const childThread = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "user-input.requested" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-child-user-input",
+        ) &&
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "user-input.resolved" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            (activity.payload as Record<string, unknown>).requestId === "req-child-user-input",
+        ),
+      2000,
+      "thread-child-user-input-interleaved",
+    );
+
+    expect(
+      parentThread.activities.some(
+        (activity) =>
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as Record<string, unknown>).requestId === "req-child-user-input",
+      ),
+    ).toBe(false);
+    expect(
+      childThread.activities.some(
+        (activity) =>
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as Record<string, unknown>).requestId === "req-parent-user-input",
+      ),
+    ).toBe(false);
+    expect(parentThread.providerThreadId ?? null).not.toBe(
+      "provider-thread-child-user-input-interleaved",
+    );
+    expect(childThread.providerThreadId).toBe("provider-thread-child-user-input-interleaved");
   });
 
   it("materializes collab subagent receiver threads from tool-call lifecycle events", async () => {

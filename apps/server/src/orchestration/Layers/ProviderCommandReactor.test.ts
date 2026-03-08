@@ -256,6 +256,63 @@ describe("ProviderCommandReactor", () => {
     };
   }
 
+  async function materializeChildThread(
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    input: {
+      readonly threadId: string;
+      readonly providerThreadId: string;
+      readonly createdAt?: string;
+      readonly title?: string;
+    },
+  ) {
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.materialize",
+        commandId: CommandId.makeUnsafe(`cmd-materialize-${input.threadId}`),
+        threadId: ThreadId.makeUnsafe(input.threadId),
+        projectId: asProjectId("project-1"),
+        title: input.title ?? "Child Thread",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        providerThreadId: input.providerThreadId,
+        parentThreadId: ThreadId.makeUnsafe("thread-1"),
+        origin: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-thread-root-1",
+        },
+        createdAt,
+      }),
+    );
+  }
+
+  async function setReadyThreadSession(
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    threadId: string,
+    createdAt: string,
+  ) {
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe(`cmd-session-set-${threadId}`),
+        threadId: ThreadId.makeUnsafe(threadId),
+        session: {
+          threadId: ThreadId.makeUnsafe(threadId),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+  }
+
   it("reacts to thread.turn.start by ensuring session and sending provider turn", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -616,6 +673,33 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("reacts to child thread.turn.interrupt by calling provider interrupt for the child only", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    await materializeChildThread(harness, {
+      threadId: "thread-child-interrupt",
+      providerThreadId: "provider-thread-child-interrupt",
+      createdAt: now,
+      title: "Child Interrupt",
+    });
+    await setReadyThreadSession(harness, "thread-child-interrupt", now);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.makeUnsafe("cmd-turn-interrupt-child"),
+        threadId: ThreadId.makeUnsafe("thread-child-interrupt"),
+        turnId: asTurnId("turn-child-interrupt"),
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
+    expect(harness.interruptTurn.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-child-interrupt",
+    });
+  });
+
   it("reacts to thread.approval.respond by forwarding provider approval response", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -654,6 +738,36 @@ describe("ProviderCommandReactor", () => {
       threadId: "thread-1",
       requestId: "approval-request-1",
       decision: "accept",
+    });
+  });
+
+  it("reacts to child thread.approval.respond by forwarding the child approval response", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    await materializeChildThread(harness, {
+      threadId: "thread-child-approval",
+      providerThreadId: "provider-thread-child-approval",
+      createdAt: now,
+      title: "Child Approval",
+    });
+    await setReadyThreadSession(harness, "thread-child-approval", now);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.approval.respond",
+        commandId: CommandId.makeUnsafe("cmd-approval-respond-child"),
+        threadId: ThreadId.makeUnsafe("thread-child-approval"),
+        requestId: asApprovalRequestId("approval-request-child-1"),
+        decision: "acceptForSession",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.respondToRequest.mock.calls.length === 1);
+    expect(harness.respondToRequest.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-child-approval",
+      requestId: "approval-request-child-1",
+      decision: "acceptForSession",
     });
   });
 
@@ -696,6 +810,40 @@ describe("ProviderCommandReactor", () => {
     expect(harness.respondToUserInput.mock.calls[0]?.[0]).toEqual({
       threadId: "thread-1",
       requestId: "user-input-request-1",
+      answers: {
+        sandbox_mode: "workspace-write",
+      },
+    });
+  });
+
+  it("reacts to child thread.user-input.respond by forwarding child structured answers", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    await materializeChildThread(harness, {
+      threadId: "thread-child-user-input",
+      providerThreadId: "provider-thread-child-user-input",
+      createdAt: now,
+      title: "Child User Input",
+    });
+    await setReadyThreadSession(harness, "thread-child-user-input", now);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.user-input.respond",
+        commandId: CommandId.makeUnsafe("cmd-user-input-respond-child"),
+        threadId: ThreadId.makeUnsafe("thread-child-user-input"),
+        requestId: asApprovalRequestId("user-input-request-child-1"),
+        answers: {
+          sandbox_mode: "workspace-write",
+        },
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.respondToUserInput.mock.calls.length === 1);
+    expect(harness.respondToUserInput.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-child-user-input",
+      requestId: "user-input-request-child-1",
       answers: {
         sandbox_mode: "workspace-write",
       },
@@ -792,6 +940,198 @@ describe("ProviderCommandReactor", () => {
         (activity.payload as Record<string, unknown>).requestId === "approval-request-1",
     );
     expect(resolvedActivity).toBeUndefined();
+  });
+
+  it("attaches stale child approval response failures to the child thread only", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    harness.respondToRequest.mockImplementation(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "session/request_permission",
+          detail: "Unknown pending permission request: approval-request-child-1",
+        }),
+      ),
+    );
+    await materializeChildThread(harness, {
+      threadId: "thread-child-approval-stale",
+      providerThreadId: "provider-thread-child-approval-stale",
+      createdAt: now,
+      title: "Child Approval Stale",
+    });
+    await setReadyThreadSession(harness, "thread-child-approval-stale", now);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.makeUnsafe("cmd-approval-requested-child"),
+        threadId: ThreadId.makeUnsafe("thread-child-approval-stale"),
+        activity: {
+          id: EventId.makeUnsafe("activity-approval-requested-child"),
+          tone: "approval",
+          kind: "approval.requested",
+          summary: "Command approval requested",
+          payload: {
+            requestId: "approval-request-child-1",
+            requestKind: "command",
+          },
+          turnId: null,
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.approval.respond",
+        commandId: CommandId.makeUnsafe("cmd-approval-respond-child-stale"),
+        threadId: ThreadId.makeUnsafe("thread-child-approval-stale"),
+        requestId: asApprovalRequestId("approval-request-child-1"),
+        decision: "acceptForSession",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const thread = readModel.threads.find(
+        (entry) => entry.id === ThreadId.makeUnsafe("thread-child-approval-stale"),
+      );
+      if (!thread) return false;
+      return thread.activities.some((activity) => activity.kind === "provider.approval.respond.failed");
+    });
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const childThread = readModel.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-child-approval-stale"),
+    );
+    const parentThread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
+    expect(childThread).toBeDefined();
+    expect(parentThread).toBeDefined();
+
+    expect(
+      childThread?.activities.find((activity) => activity.kind === "provider.approval.respond.failed")
+        ?.payload,
+    ).toMatchObject({
+      requestId: "approval-request-child-1",
+    });
+    expect(
+      childThread?.activities.find(
+        (activity) =>
+          activity.kind === "approval.resolved" &&
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as Record<string, unknown>).requestId === "approval-request-child-1",
+      ),
+    ).toBeUndefined();
+    expect(
+      parentThread?.activities.some((activity) => activity.kind === "provider.approval.respond.failed"),
+    ).toBe(false);
+  });
+
+  it("attaches stale child user-input response failures to the child thread only", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    harness.respondToUserInput.mockImplementation(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "session/provide_user_input",
+          detail: "Unknown pending user input request: user-input-request-child-1",
+        }),
+      ),
+    );
+    await materializeChildThread(harness, {
+      threadId: "thread-child-user-input-stale",
+      providerThreadId: "provider-thread-child-user-input-stale",
+      createdAt: now,
+      title: "Child User Input Stale",
+    });
+    await setReadyThreadSession(harness, "thread-child-user-input-stale", now);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.makeUnsafe("cmd-user-input-requested-child"),
+        threadId: ThreadId.makeUnsafe("thread-child-user-input-stale"),
+        activity: {
+          id: EventId.makeUnsafe("activity-user-input-requested-child"),
+          tone: "info",
+          kind: "user-input.requested",
+          summary: "User input requested",
+          payload: {
+            requestId: "user-input-request-child-1",
+            questions: [
+              {
+                id: "sandbox_mode",
+                header: "Sandbox",
+                question: "Which mode should be used?",
+                options: [
+                  {
+                    label: "workspace-write",
+                    description: "Allow workspace writes only",
+                  },
+                ],
+              },
+            ],
+          },
+          turnId: null,
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.user-input.respond",
+        commandId: CommandId.makeUnsafe("cmd-user-input-respond-child-stale"),
+        threadId: ThreadId.makeUnsafe("thread-child-user-input-stale"),
+        requestId: asApprovalRequestId("user-input-request-child-1"),
+        answers: {
+          sandbox_mode: "workspace-write",
+        },
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const thread = readModel.threads.find(
+        (entry) => entry.id === ThreadId.makeUnsafe("thread-child-user-input-stale"),
+      );
+      if (!thread) return false;
+      return thread.activities.some((activity) => activity.kind === "provider.user-input.respond.failed");
+    });
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const childThread = readModel.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-child-user-input-stale"),
+    );
+    const parentThread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
+    expect(childThread).toBeDefined();
+    expect(parentThread).toBeDefined();
+
+    expect(
+      childThread?.activities.find((activity) => activity.kind === "provider.user-input.respond.failed")
+        ?.payload,
+    ).toMatchObject({
+      requestId: "user-input-request-child-1",
+    });
+    expect(
+      childThread?.activities.find(
+        (activity) =>
+          activity.kind === "user-input.resolved" &&
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as Record<string, unknown>).requestId === "user-input-request-child-1",
+      ),
+    ).toBeUndefined();
+    expect(
+      parentThread?.activities.some((activity) => activity.kind === "provider.user-input.respond.failed"),
+    ).toBe(false);
   });
 
   it("reacts to thread.session.stop by stopping provider session and clearing thread session state", async () => {

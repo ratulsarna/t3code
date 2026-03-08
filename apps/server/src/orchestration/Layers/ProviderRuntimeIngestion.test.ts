@@ -2993,7 +2993,6 @@ async function createHarness() {
 
   it("re-materializes a child thread with a previously-deleted providerThreadId", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
 
     await materializeChildThread(harness, {
       threadId: "thread-child-reuse",
@@ -3097,46 +3096,52 @@ async function createHarness() {
     const harness = await createHarness();
     const now = new Date().toISOString();
 
-    harness.emit({
-      type: "thread.started",
-      eventId: asEventId("evt-thread-started-concurrent-1"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      providerThreadId: "concurrent-ptid-1",
-      payload: {
-        providerThreadId: "concurrent-ptid-1",
-        source: {
-          kind: "subAgentThreadSpawn",
-          subagent: {
-            thread_spawn: {
-              parent_thread_id: "provider-thread-root-1",
-              depth: 1,
+    await Promise.all([
+      Promise.resolve().then(() =>
+        harness.emit({
+          type: "thread.started",
+          eventId: asEventId("evt-thread-started-concurrent-1"),
+          provider: "codex",
+          createdAt: now,
+          threadId: asThreadId("thread-1"),
+          providerThreadId: "concurrent-ptid-1",
+          payload: {
+            providerThreadId: "concurrent-ptid-1",
+            source: {
+              kind: "subAgentThreadSpawn",
+              subagent: {
+                thread_spawn: {
+                  parent_thread_id: "provider-thread-root-1",
+                  depth: 1,
+                },
+              },
             },
           },
-        },
-      },
-    });
-    harness.emit({
-      type: "thread.started",
-      eventId: asEventId("evt-thread-started-concurrent-2"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      providerThreadId: "concurrent-ptid-1",
-      payload: {
-        providerThreadId: "concurrent-ptid-1",
-        source: {
-          kind: "subAgentThreadSpawn",
-          subagent: {
-            thread_spawn: {
-              parent_thread_id: "provider-thread-root-1",
-              depth: 1,
+        }),
+      ),
+      Promise.resolve().then(() =>
+        harness.emit({
+          type: "thread.started",
+          eventId: asEventId("evt-thread-started-concurrent-2"),
+          provider: "codex",
+          createdAt: now,
+          threadId: asThreadId("thread-1"),
+          providerThreadId: "concurrent-ptid-1",
+          payload: {
+            providerThreadId: "concurrent-ptid-1",
+            source: {
+              kind: "subAgentThreadSpawn",
+              subagent: {
+                thread_spawn: {
+                  parent_thread_id: "provider-thread-root-1",
+                  depth: 1,
+                },
+              },
             },
           },
-        },
-      },
-    });
+        }),
+      ),
+    ]);
 
     await Effect.runPromise(Effect.sleep("100 millis"));
 
@@ -3145,6 +3150,19 @@ async function createHarness() {
       (thread) => thread.providerThreadId === "concurrent-ptid-1" && thread.deletedAt === null,
     );
     expect(matchingChildren.length).toBe(1);
+    const runtimes = await Effect.runPromise(harness.providerSessionRuntimeRepository.list());
+    const matchingBindings = runtimes.filter((runtime) => {
+      const payload = runtime.resumeCursor;
+      return (
+        payload !== null &&
+        typeof payload === "object" &&
+        !Array.isArray(payload) &&
+        "threadId" in payload &&
+        payload.threadId === "concurrent-ptid-1"
+      );
+    });
+    expect(matchingBindings).toHaveLength(1);
+    expect(matchingBindings[0]?.threadId).toBe(matchingChildren[0]?.id);
 
     // Verify pipeline is still functional by routing a turn event to the child
     harness.emit({

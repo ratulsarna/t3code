@@ -182,7 +182,7 @@ describe("ProviderCommandReactor", () => {
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
-      stopLiveSessionIfPresent: vi.fn(() => Effect.void) as unknown as ProviderServiceShape["stopLiveSessionIfPresent"],
+      stopLiveSessionIfPresent: vi.fn<ProviderServiceShape["stopLiveSessionIfPresent"]>(() => Effect.void),
       listSessions: () => Effect.succeed(runtimeSessions),
       getCapabilities: (provider) =>
         Effect.succeed({
@@ -251,7 +251,7 @@ describe("ProviderCommandReactor", () => {
       respondToRequest,
       respondToUserInput,
       stopSession,
-      stopLiveSessionIfPresent: service.stopLiveSessionIfPresent as unknown as ReturnType<typeof vi.fn>,
+      stopLiveSessionIfPresent: service.stopLiveSessionIfPresent,
       renameBranch,
       generateBranchName,
       stateDir,

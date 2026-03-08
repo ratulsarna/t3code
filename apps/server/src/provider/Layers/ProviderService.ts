@@ -404,13 +404,16 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       });
 
     const stopLiveSessionIfPresent: ProviderServiceShape["stopLiveSessionIfPresent"] = (input) =>
-      Effect.forEach(adapters, (adapter) =>
-        Effect.gen(function* () {
-          const hasIt = yield* adapter.hasSession(input.threadId);
-          if (hasIt) {
-            yield* adapter.stopSession(input.threadId);
-          }
-        }),
+      Effect.forEach(
+        adapters,
+        (adapter) =>
+          adapter.stopSession(input.threadId).pipe(
+            Effect.catchTags({
+              ProviderAdapterSessionNotFoundError: () => Effect.void,
+              ProviderAdapterSessionClosedError: () => Effect.void,
+            }),
+          ),
+        { concurrency: "unbounded", discard: true },
       ).pipe(Effect.asVoid);
 
     const listSessions: ProviderServiceShape["listSessions"] = () =>

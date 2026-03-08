@@ -773,8 +773,18 @@ const make = Effect.gen(function* () {
         ),
       );
 
+    const nextReadModel = yield* orchestrationEngine.getReadModel();
+    const resolvedChild =
+      nextReadModel.threads.find((entry) => entry.id === childThreadId) ??
+      nextReadModel.threads.find(
+        (entry) => entry.providerThreadId === providerThreadId && entry.deletedAt === null,
+      );
+    if (!resolvedChild) {
+      return input.parentThread;
+    }
+
     yield* providerSessionDirectory.upsert({
-      threadId: childThreadId,
+      threadId: resolvedChild.id,
       provider: input.event.provider,
       runtimeMode: input.parentThread.runtimeMode,
       status: providerRuntimeStatusFromOrchestrationSession(
@@ -786,14 +796,7 @@ const make = Effect.gen(function* () {
         : {}),
     });
 
-    const nextReadModel = yield* orchestrationEngine.getReadModel();
-    return (
-      nextReadModel.threads.find((entry) => entry.id === childThreadId) ??
-      nextReadModel.threads.find(
-        (entry) => entry.providerThreadId === providerThreadId && entry.deletedAt === null,
-      ) ??
-      input.parentThread
-    );
+    return resolvedChild;
   });
 
   const materializeCollabSubagentThreadsForRuntimeEvent = Effect.fnUntraced(function* (input: {
@@ -884,8 +887,18 @@ const make = Effect.gen(function* () {
           ),
         );
 
+      const nextReadModel = yield* orchestrationEngine.getReadModel();
+      const resolvedChild =
+        nextReadModel.threads.find((entry) => entry.id === childThreadId) ??
+        nextReadModel.threads.find(
+          (entry) => entry.providerThreadId === providerThreadId && entry.deletedAt === null,
+        );
+      if (!resolvedChild) {
+        continue;
+      }
+
       yield* providerSessionDirectory.upsert({
-        threadId: childThreadId,
+        threadId: resolvedChild.id,
         provider: input.event.provider,
         runtimeMode: effectiveParentThread.runtimeMode,
         status: providerRuntimeStatusFromOrchestrationSession(
@@ -901,7 +914,7 @@ const make = Effect.gen(function* () {
         yield* orchestrationEngine.dispatch({
           type: "thread.message.import",
           commandId: providerCommandId(input.event, "thread-message-import"),
-          threadId: childThreadId,
+          threadId: resolvedChild.id,
           messageId: MessageId.makeUnsafe(
             `provider-import:${providerThreadId}:${input.event.itemId ?? input.event.eventId}:prompt`,
           ),

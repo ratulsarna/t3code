@@ -636,16 +636,7 @@ const make = Effect.gen(function* () {
   const processThreadDeleted = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.deleted" }>,
   ) {
-    yield* providerService
-      .stopLiveSessionIfPresent({ threadId: event.payload.threadId })
-      .pipe(
-        Effect.catchCause((cause) =>
-          Effect.logDebug("No live provider session to stop on thread deletion", {
-            threadId: event.payload.threadId,
-            cause: Cause.pretty(cause),
-          }),
-        ),
-      );
+    yield* providerService.stopLiveSessionIfPresent({ threadId: event.payload.threadId });
   });
 
   const processDomainEvent = (event: ProviderIntentEvent) =>

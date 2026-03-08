@@ -155,10 +155,19 @@ function makeFakeCodexAdapter(provider: ProviderKind = "codex") {
   );
 
   const stopSession = vi.fn(
-    (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
-      Effect.sync(() => {
+    (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> => {
+      if (!sessions.has(threadId)) {
+        return Effect.fail(
+          new ProviderAdapterSessionNotFoundError({
+            provider,
+            threadId,
+          }),
+        );
+      }
+      return Effect.sync(() => {
         sessions.delete(threadId);
-      }),
+      });
+    },
   );
 
   const listSessions = vi.fn(
@@ -896,8 +905,11 @@ routing.layer("ProviderServiceLive routing", (it) => {
         // Call with a threadId that has no live session.
         yield* provider.stopLiveSessionIfPresent({ threadId: asThreadId("thread-nonexistent") });
 
-        // No additional stopSession calls should have been made.
-        assert.equal(routing.codex.stopSession.mock.calls.length, stopCallsBefore);
+        // The adapter stop is attempted directly, but not-found is swallowed.
+        assert.equal(routing.codex.stopSession.mock.calls.length, stopCallsBefore + 1);
+        assert.deepEqual(routing.codex.stopSession.mock.calls.at(-1), [
+          asThreadId("thread-nonexistent"),
+        ]);
       }),
   );
 });

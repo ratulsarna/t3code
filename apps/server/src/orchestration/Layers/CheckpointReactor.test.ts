@@ -467,6 +467,90 @@ describe("CheckpointReactor", () => {
     expect(parentThread?.checkpoints).toHaveLength(0);
   });
 
+  it("falls back to the parent session cwd for routed child checkpoints when the child has no live session", async () => {
+    const projectWorkspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "t3-checkpoint-project-root-"));
+    tempDirs.push(projectWorkspaceRoot);
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      projectWorkspaceRoot,
+      threadWorktreePath: null,
+    });
+    const createdAt = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.materialize",
+        commandId: CommandId.makeUnsafe("cmd-thread-materialize-checkpoint-child-fallback"),
+        threadId: ThreadId.makeUnsafe("thread-child-checkpoint-fallback"),
+        projectId: asProjectId("project-1"),
+        title: "Child Checkpoint Fallback",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        providerThreadId: "provider-thread-child-checkpoint-fallback",
+        parentThreadId: ThreadId.makeUnsafe("thread-1"),
+        origin: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-thread-root-1",
+        },
+        createdAt,
+      }),
+    );
+
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.makeUnsafe("evt-turn-started-child-fallback"),
+      provider: "codex",
+      createdAt,
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      providerThreadId: "provider-thread-child-checkpoint-fallback",
+      turnId: asTurnId("turn-child-checkpoint-fallback"),
+    });
+
+    await waitForGitRefExists(
+      harness.cwd,
+      checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-child-checkpoint-fallback"), 0),
+    );
+
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "v2-child-fallback\n", "utf8");
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.makeUnsafe("evt-turn-completed-child-fallback"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      providerThreadId: "provider-thread-child-checkpoint-fallback",
+      turnId: asTurnId("turn-child-checkpoint-fallback"),
+      payload: { state: "completed" },
+    });
+
+    const childThread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-child-checkpoint-fallback" &&
+        entry.checkpoints.length === 1,
+      2000,
+      "thread-child-checkpoint-fallback",
+    );
+
+    expect(childThread.checkpoints[0]?.checkpointTurnCount).toBe(1);
+    expect(
+      gitRefExists(
+        harness.cwd,
+        checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-child-checkpoint-fallback"), 1),
+      ),
+    ).toBe(true);
+    expect(
+      gitShowFileAtRef(
+        harness.cwd,
+        checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-child-checkpoint-fallback"), 1),
+        "README.md",
+      ),
+    ).toBe("v2-child-fallback\n");
+  });
+
   it("attaches checkpoint capture failure activity to the resolved child thread", async () => {
     const harness = await createHarness({ seedFilesystemCheckpoints: false });
     const createdAt = new Date().toISOString();

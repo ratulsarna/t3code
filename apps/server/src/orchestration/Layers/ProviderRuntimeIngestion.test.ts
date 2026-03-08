@@ -1628,6 +1628,56 @@ async function createHarness() {
     }
   });
 
+  it("materializes spawned subagent threads from the top-level providerThreadId when payload metadata omits it", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "thread.started",
+      eventId: asEventId("evt-thread-child-started-top-level-provider-thread"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-top-level-only",
+      createdAt: now,
+      payload: {
+        name: "Child top level",
+        preview: "Top level provider thread id",
+        source: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-thread-root-1",
+          depth: 1,
+          agentNickname: "Hypatia",
+          agentRole: "reviewer",
+        },
+      },
+    } as unknown as ProviderRuntimeEvent);
+
+    const childThread = await (async () => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const readModel = await Effect.runPromise(harness.engine.getReadModel());
+        const found = readModel.threads.find(
+          (thread) => thread.providerThreadId === "provider-thread-child-top-level-only",
+        );
+        if (found) {
+          return found;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("Timed out waiting for top-level providerThreadId child materialization");
+    })();
+
+    expect(childThread.parentThreadId).toBe("thread-1");
+    expect(childThread.title).toBe("Child top level");
+    expect(childThread.origin).toEqual({
+      kind: "subAgentThreadSpawn",
+      parentProviderThreadId: "provider-thread-root-1",
+      depth: 1,
+      agentNickname: "Hypatia",
+      agentRole: "reviewer",
+    });
+  });
+
   it("routes child turn lifecycle events by providerThreadId without disturbing the parent", async () => {
     const harness = await createHarness();
     const createdAt = new Date().toISOString();
@@ -2099,6 +2149,91 @@ async function createHarness() {
       childThread.id,
     );
     expect(upgradedChild.title).toBe("Ampere");
+  });
+
+  it("backfills the collab prompt onto an existing child thread without duplicating it", async () => {
+    const harness = await createHarness();
+    const createdAt = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.materialize",
+        commandId: CommandId.makeUnsafe("cmd-thread-materialize-existing-collab-child"),
+        threadId: ThreadId.makeUnsafe("thread-existing-collab-child"),
+        projectId: asProjectId("project-1"),
+        title: "Subagent",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        providerThreadId: "provider-thread-existing-collab-child",
+        parentThreadId: ThreadId.makeUnsafe("thread-1"),
+        origin: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-thread-root-1",
+        },
+        createdAt,
+      }),
+    );
+
+    const prompt = "Review the failing snapshot and explain the mismatch.";
+    const emitPromptEvent = () =>
+      harness.emit({
+        type: "item.completed",
+        eventId: asEventId(`evt-collab-existing-child-prompt-${crypto.randomUUID()}`),
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        turnId: asTurnId("turn-collab-existing-child-prompt"),
+        itemId: asItemId(`call-collab-existing-child-prompt-${crypto.randomUUID()}`),
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              type: "collabAgentToolCall",
+              id: "call-collab-existing-child-prompt",
+              tool: "wait",
+              status: "completed",
+              senderThreadId: "provider-thread-root-1",
+              receiverThreadIds: ["provider-thread-existing-collab-child"],
+              prompt,
+              agentsStates: {},
+            },
+          },
+        },
+      });
+
+    emitPromptEvent();
+
+    const withPrompt = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.messages.some(
+          (message) => message.role === "user" && message.turnId === null && message.text === prompt,
+        ),
+      2000,
+      "thread-existing-collab-child",
+    );
+
+    expect(
+      withPrompt.messages.filter(
+        (message) => message.role === "user" && message.turnId === null && message.text === prompt,
+      ),
+    ).toHaveLength(1);
+
+    emitPromptEvent();
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const childThread = readModel.threads.find(
+      (thread) => thread.id === ThreadId.makeUnsafe("thread-existing-collab-child"),
+    );
+    expect(
+      childThread?.messages.filter(
+        (message) => message.role === "user" && message.turnId === null && message.text === prompt,
+      ),
+    ).toHaveLength(1);
   });
 
   it("falls back to the first prompt line for collab child titles when no nickname is available", async () => {

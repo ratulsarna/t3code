@@ -180,12 +180,25 @@ function resolveChildThreadTitle(input: {
 function isReplaceableSubagentTitle(
   thread: OrchestrationReadModel["threads"][number],
 ): boolean {
+  if (thread.parentThreadId === null) {
+    return false;
+  }
+
   if (thread.title === "Subagent") {
     return true;
   }
 
   const firstUserMessage = thread.messages.find((message) => message.role === "user");
   return promptPreviewTitle(firstUserMessage?.text) === thread.title;
+}
+
+function hasSeedUserPrompt(
+  thread: OrchestrationReadModel["threads"][number],
+  prompt: string,
+): boolean {
+  return thread.messages.some(
+    (message) => message.role === "user" && message.turnId === null && message.text === prompt,
+  );
 }
 
 function collabReceiverProviderThreadIdsFromRuntimeEvent(
@@ -714,7 +727,7 @@ const make = Effect.gen(function* () {
     }
 
     const source = input.event.payload.source;
-    const providerThreadId = input.event.payload.providerThreadId;
+    const providerThreadId = input.event.payload.providerThreadId ?? input.event.providerThreadId;
     if (!providerThreadId || source?.kind !== "subAgentThreadSpawn") {
       return input.parentThread;
     }
@@ -809,6 +822,20 @@ const make = Effect.gen(function* () {
             commandId: providerCommandId(input.event, "thread-collab-title-upgrade"),
             threadId: existingChild.id,
             title: upgradedTitle,
+          });
+        }
+        if (prompt && !hasSeedUserPrompt(existingChild, prompt)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.message.import",
+            commandId: providerCommandId(input.event, "thread-collab-prompt-backfill"),
+            threadId: existingChild.id,
+            messageId: MessageId.makeUnsafe(
+              `provider-import:${providerThreadId}:${input.event.itemId ?? input.event.eventId}:prompt`,
+            ),
+            role: "user",
+            text: prompt,
+            turnId: null,
+            createdAt: input.event.createdAt,
           });
         }
         continue;

@@ -163,6 +163,116 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
+  it("cascades thread deletion to live descendants", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.makeUnsafe("cmd-project-cascade-delete-create"),
+        projectId: asProjectId("project-cascade-delete"),
+        title: "Cascade Delete Project",
+        workspaceRoot: "/tmp/project-cascade-delete",
+        defaultModel: "gpt-5-codex",
+        createdAt,
+      }),
+    );
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.makeUnsafe("cmd-thread-cascade-delete-root"),
+        threadId: ThreadId.makeUnsafe("thread-cascade-root"),
+        projectId: asProjectId("project-cascade-delete"),
+        title: "Root",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.materialize",
+        commandId: CommandId.makeUnsafe("cmd-thread-cascade-delete-child"),
+        threadId: ThreadId.makeUnsafe("thread-cascade-child"),
+        projectId: asProjectId("project-cascade-delete"),
+        title: "Child",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        providerThreadId: "provider-thread-cascade-child",
+        parentThreadId: ThreadId.makeUnsafe("thread-cascade-root"),
+        origin: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-thread-cascade-root",
+        },
+        createdAt,
+      }),
+    );
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.materialize",
+        commandId: CommandId.makeUnsafe("cmd-thread-cascade-delete-grandchild"),
+        threadId: ThreadId.makeUnsafe("thread-cascade-grandchild"),
+        projectId: asProjectId("project-cascade-delete"),
+        title: "Grandchild",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        providerThreadId: "provider-thread-cascade-grandchild",
+        parentThreadId: ThreadId.makeUnsafe("thread-cascade-child"),
+        origin: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-thread-cascade-child",
+        },
+        createdAt,
+      }),
+    );
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.makeUnsafe("cmd-thread-cascade-delete"),
+        threadId: ThreadId.makeUnsafe("thread-cascade-root"),
+      }),
+    );
+
+    const readModel = await system.run(engine.getReadModel());
+    expect(
+      readModel.threads
+        .filter((thread) => thread.projectId === asProjectId("project-cascade-delete"))
+        .every((thread) => thread.deletedAt !== null),
+    ).toBe(true);
+
+    const events = await system.run(
+      Stream.runCollect(engine.readEvents(0)).pipe(
+        Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)),
+      ),
+    );
+    expect(
+      events
+        .filter((event) => event.type === "thread.deleted")
+        .map((event) => event.payload.threadId),
+    ).toEqual([
+      "thread-cascade-grandchild",
+      "thread-cascade-child",
+      "thread-cascade-root",
+    ]);
+
+    await system.dispose();
+  });
+
   it("streams persisted domain events in order", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;

@@ -2,6 +2,7 @@ import type {
   OrchestrationCommand,
   OrchestrationEvent,
   OrchestrationReadModel,
+  ThreadId,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
 
@@ -80,6 +81,39 @@ function toThreadCreatedPayload(input: {
     createdAt: input.createdAt,
     updatedAt: input.createdAt,
   };
+}
+
+function liveDescendantThreadIdsInDeleteOrder(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly rootThreadId: ThreadId;
+}): ReadonlyArray<ThreadId> {
+  const childIdsByParentId = new Map<ThreadId, Array<ThreadId>>();
+  for (const thread of input.readModel.threads) {
+    if (thread.deletedAt !== null || thread.parentThreadId == null) {
+      continue;
+    }
+    const parentThreadId = thread.parentThreadId;
+    const existingChildIds = childIdsByParentId.get(parentThreadId) ?? [];
+    existingChildIds.push(thread.id);
+    childIdsByParentId.set(parentThreadId, existingChildIds);
+  }
+
+  const visited = new Set<ThreadId>();
+  const orderedThreadIds: Array<ThreadId> = [];
+
+  const visit = (threadId: ThreadId) => {
+    if (visited.has(threadId)) {
+      return;
+    }
+    visited.add(threadId);
+    for (const childThreadId of childIdsByParentId.get(threadId) ?? []) {
+      visit(childThreadId);
+    }
+    orderedThreadIds.push(threadId);
+  };
+
+  visit(input.rootThreadId);
+  return orderedThreadIds;
 }
 
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
@@ -215,25 +249,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.delete": {
-      yield* requireThread({
+      const rootThread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = nowIso();
-      return {
-        ...withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt,
-          commandId: command.commandId,
-        }),
-        type: "thread.deleted",
-        payload: {
-          threadId: command.threadId,
-          deletedAt: occurredAt,
-        },
-      };
+      const events: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      for (const threadId of liveDescendantThreadIdsInDeleteOrder({
+        readModel,
+        rootThreadId: rootThread.id,
+      })) {
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.deleted",
+          payload: {
+            threadId,
+            deletedAt: occurredAt,
+          },
+        });
+      }
+      return events;
     }
 
     case "thread.meta.update": {

@@ -21,6 +21,7 @@ import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { CheckpointStoreError } from "../../checkpointing/Errors.ts";
 import { OrchestrationDispatchError } from "../Errors.ts";
 import { isGitRepository } from "../../git/isRepo.ts";
+import { resolveRuntimeEventTargetThread } from "../runtimeThreadRouting.ts";
 
 type ReactorInput =
   | {
@@ -156,7 +157,7 @@ const make = Effect.gen(function* () {
     }
 
     const readModel = yield* orchestrationEngine.getReadModel();
-    const thread = readModel.threads.find((entry) => entry.id === event.threadId);
+    const thread = resolveRuntimeEventTargetThread(readModel, event);
     if (!thread) {
       return;
     }
@@ -306,9 +307,7 @@ const make = Effect.gen(function* () {
     }
 
     const readModel = yield* orchestrationEngine.getReadModel();
-    const thread = readModel.threads.find(
-      (entry) => entry.id === event.threadId,
-    );
+    const thread = resolveRuntimeEventTargetThread(readModel, event);
     if (!thread) {
       return;
     }
@@ -569,12 +568,16 @@ const make = Effect.gen(function* () {
       const turnId = toTurnId(event.turnId);
       yield* captureCheckpointFromTurnCompletion(event).pipe(
         Effect.catch((error) =>
-          appendCaptureFailureActivity({
-            threadId: event.threadId,
-            turnId,
-            detail: error.message,
-            createdAt: new Date().toISOString(),
-          }).pipe(Effect.catch(() => Effect.void)),
+          Effect.gen(function* () {
+            const readModel = yield* orchestrationEngine.getReadModel();
+            const threadId = resolveRuntimeEventTargetThread(readModel, event)?.id ?? event.threadId;
+            yield* appendCaptureFailureActivity({
+              threadId,
+              turnId,
+              detail: error.message,
+              createdAt: new Date().toISOString(),
+            }).pipe(Effect.catch(() => Effect.void));
+          }),
         ),
       );
       return;

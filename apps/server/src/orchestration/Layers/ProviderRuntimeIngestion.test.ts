@@ -51,6 +51,7 @@ type LegacyProviderRuntimeEvent = {
   readonly provider: "codex";
   readonly createdAt: string;
   readonly threadId: ThreadId;
+  readonly providerThreadId?: string | undefined;
   readonly turnId?: string | undefined;
   readonly itemId?: string | undefined;
   readonly requestId?: string | undefined;
@@ -89,11 +90,12 @@ async function waitForThread(
   engine: OrchestrationEngineShape,
   predicate: (thread: ProviderRuntimeTestThread) => boolean,
   timeoutMs = 2000,
+  threadId = "thread-1",
 ) {
   const deadline = Date.now() + timeoutMs;
   const poll = async (): Promise<ProviderRuntimeTestThread> => {
     const readModel = await Effect.runPromise(engine.getReadModel());
-    const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe(threadId));
     if (thread && predicate(thread)) {
       return thread;
     }
@@ -1590,6 +1592,174 @@ async function createHarness() {
     }
   });
 
+  it("routes child turn lifecycle events by providerThreadId without disturbing the parent", async () => {
+    const harness = await createHarness();
+    const createdAt = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.materialize",
+        commandId: CommandId.makeUnsafe("cmd-thread-materialize-routing-child"),
+        threadId: ThreadId.makeUnsafe("thread-child-routing"),
+        projectId: asProjectId("project-1"),
+        title: "Child Routing",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        providerThreadId: "provider-thread-child-routing",
+        parentThreadId: ThreadId.makeUnsafe("thread-1"),
+        origin: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-thread-root-1",
+        },
+        createdAt,
+      }),
+    );
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-child-turn-started"),
+      provider: "codex",
+      createdAt,
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-routing",
+      turnId: asTurnId("turn-child-1"),
+    });
+
+    const childRunning = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-child-1",
+      2000,
+      "thread-child-routing",
+    );
+    expect(childRunning.session?.providerThreadId).toBe("provider-thread-child-routing");
+
+    const parentReadModel = await Effect.runPromise(harness.engine.getReadModel());
+    const parentThread = parentReadModel.threads.find((thread) => thread.id === asThreadId("thread-1"));
+    expect(parentThread?.session?.status).toBe("ready");
+    expect(parentThread?.session?.activeTurnId).toBeNull();
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-child-turn-completed"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-routing",
+      turnId: asTurnId("turn-child-1"),
+      payload: {
+        state: "completed",
+      },
+    });
+
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "ready" && thread.session?.activeTurnId === null,
+      2000,
+      "thread-child-routing",
+    );
+  });
+
+  it("routes child assistant output and activities by providerThreadId", async () => {
+    const harness = await createHarness();
+    const createdAt = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.materialize",
+        commandId: CommandId.makeUnsafe("cmd-thread-materialize-routing-message"),
+        threadId: ThreadId.makeUnsafe("thread-child-message"),
+        projectId: asProjectId("project-1"),
+        title: "Child Message",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        providerThreadId: "provider-thread-child-message",
+        parentThreadId: ThreadId.makeUnsafe("thread-1"),
+        origin: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-thread-root-1",
+        },
+        createdAt,
+      }),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-child-content-delta"),
+      provider: "codex",
+      createdAt,
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-message",
+      turnId: asTurnId("turn-child-message"),
+      itemId: asItemId("item-child-message"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "hello from child",
+      },
+    });
+
+    harness.emit({
+      type: "turn.plan.updated",
+      eventId: asEventId("evt-child-plan-updated"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-message",
+      turnId: asTurnId("turn-child-message"),
+      payload: {
+        explanation: "Child plan",
+        plan: [{ step: "Inspect files", status: "inProgress" }],
+      },
+    });
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-child-item-completed"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-message",
+      turnId: asTurnId("turn-child-message"),
+      itemId: asItemId("item-child-message"),
+      payload: {
+        itemType: "assistant_message",
+        title: "Assistant message",
+        status: "completed",
+        detail: "hello from child",
+      },
+    });
+
+    const childThread = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.messages.some(
+          (message) => message.role === "assistant" && message.text.includes("hello from child"),
+        ) &&
+        thread.activities.some((activity) => activity.kind === "turn.plan.updated"),
+      2000,
+      "thread-child-message",
+    );
+
+    expect(
+      childThread.messages.some((message) => message.role === "assistant"),
+    ).toBe(true);
+    expect(
+      childThread.activities.some((activity) => activity.kind === "turn.plan.updated"),
+    ).toBe(true);
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const parentThread = readModel.threads.find((thread) => thread.id === asThreadId("thread-1"));
+    expect(parentThread?.messages).toHaveLength(0);
+    expect(parentThread?.activities.some((activity) => activity.kind === "turn.plan.updated")).toBe(false);
+  });
+
   it("materializes collab subagent receiver threads from tool-call lifecycle events", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -1613,7 +1783,13 @@ async function createHarness() {
             status: "inProgress",
             senderThreadId: "provider-thread-root-1",
             receiverThreadIds: ["provider-thread-child-collab-1"],
-            prompt: null,
+            prompt: "Subagent, inspect this file and report back.",
+            receiverAgents: [
+              {
+                threadId: "provider-thread-child-collab-1",
+                agentNickname: "Pauli",
+              },
+            ],
             agentsStates: {},
           },
           threadId: "provider-thread-root-1",
@@ -1642,8 +1818,15 @@ async function createHarness() {
       kind: "subAgentThreadSpawn",
       parentProviderThreadId: "provider-thread-root-1",
     });
-    expect(childThread.title).toBe("Subagent");
+    expect(childThread.title).toBe("Pauli");
     expect(childThread.session).toBeNull();
+    expect(childThread.messages).toEqual([
+      expect.objectContaining({
+        role: "user",
+        text: "Subagent, inspect this file and report back.",
+        turnId: null,
+      }),
+    ]);
 
     const binding = await Effect.runPromise(
       harness.providerSessionRuntimeRepository.getByThreadId({ threadId: childThread.id }),
@@ -1679,6 +1862,7 @@ async function createHarness() {
           senderThreadId: "provider-thread-root-1",
           receiverThreadIds: ["provider-thread-child-collab-unwrapped-1"],
           prompt: "hello",
+          newAgentNickname: "Ampere",
           agentsStates: {
             "provider-thread-child-collab-unwrapped-1": {
               status: "pendingInit",
@@ -1709,7 +1893,224 @@ async function createHarness() {
       kind: "subAgentThreadSpawn",
       parentProviderThreadId: "provider-thread-root-1",
     });
-    expect(childThread.title).toBe("Subagent");
+    expect(childThread.title).toBe("Ampere");
+    expect(childThread.messages).toEqual([
+      expect.objectContaining({
+        role: "user",
+        text: "hello",
+        turnId: null,
+      }),
+    ]);
+  });
+
+  it("upgrades placeholder child titles when richer thread.started metadata arrives later", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-collab-subagent-title-upgrade"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-collab-title-upgrade"),
+      itemId: asItemId("call-collab-title-upgrade"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        data: {
+          type: "collabAgentToolCall",
+          id: "call-collab-title-upgrade",
+          tool: "spawnAgent",
+          status: "completed",
+          senderThreadId: "provider-thread-root-1",
+          receiverThreadIds: ["provider-thread-child-title-upgrade"],
+          prompt: "say hello",
+          agentsStates: {},
+        },
+      },
+    });
+
+    const placeholderChild = await (async () => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const readModel = await Effect.runPromise(harness.engine.getReadModel());
+        const found = readModel.threads.find(
+          (thread) => thread.providerThreadId === "provider-thread-child-title-upgrade",
+        );
+        if (found) {
+          return found;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("Timed out waiting for placeholder child thread");
+    })();
+
+    expect(placeholderChild.title).toBe("say hello");
+
+    harness.emit({
+      type: "thread.started",
+      eventId: asEventId("evt-thread-child-title-upgrade"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-title-upgrade",
+      createdAt: new Date().toISOString(),
+      payload: {
+        providerThreadId: "provider-thread-child-title-upgrade",
+        name: null,
+        preview: "",
+        source: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-thread-root-1",
+          agentNickname: "Ampere",
+          agentRole: "generalist",
+        },
+      },
+    });
+
+    const upgradedChild = await waitForThread(
+      harness.engine,
+      (thread) => thread.title === "Ampere",
+      2000,
+      placeholderChild.id,
+    );
+    expect(upgradedChild.title).toBe("Ampere");
+  });
+
+  it("upgrades placeholder collab child titles when later collab events include receiver nicknames", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-collab-subagent-title-placeholder"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-collab-title-placeholder"),
+      itemId: asItemId("call-collab-title-placeholder"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "inProgress",
+        data: {
+          item: {
+            type: "collabAgentToolCall",
+            id: "call-collab-title-placeholder",
+            tool: "spawnAgent",
+            status: "inProgress",
+            senderThreadId: "provider-thread-root-1",
+            receiverThreadIds: ["provider-thread-child-collab-title-upgrade"],
+            prompt: "say hello",
+            agentsStates: {},
+          },
+        },
+      },
+    });
+
+    const childThread = await (async () => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const readModel = await Effect.runPromise(harness.engine.getReadModel());
+        const found = readModel.threads.find(
+          (thread) => thread.providerThreadId === "provider-thread-child-collab-title-upgrade",
+        );
+        if (found) {
+          return found;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("Timed out waiting for collab child thread");
+    })();
+
+    expect(childThread.title).toBe("say hello");
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-collab-subagent-title-upgrade-later"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId: asTurnId("turn-collab-title-upgrade"),
+      itemId: asItemId("call-collab-title-upgrade-later"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        data: {
+          item: {
+            type: "collabAgentToolCall",
+            id: "call-collab-title-upgrade-later",
+            tool: "wait",
+            status: "completed",
+            senderThreadId: "provider-thread-root-1",
+            receiverThreadIds: ["provider-thread-child-collab-title-upgrade"],
+            receiverAgents: [
+              {
+                threadId: "provider-thread-child-collab-title-upgrade",
+                agentNickname: "Ampere",
+              },
+            ],
+            prompt: "say hello",
+            agentsStates: {},
+          },
+        },
+      },
+    });
+
+    const upgradedChild = await waitForThread(
+      harness.engine,
+      (thread) => thread.title === "Ampere",
+      2000,
+      childThread.id,
+    );
+    expect(upgradedChild.title).toBe("Ampere");
+  });
+
+  it("falls back to the first prompt line for collab child titles when no nickname is available", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-collab-subagent-prompt-title"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-collab-prompt-title"),
+      itemId: asItemId("call-collab-prompt-title"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        data: {
+          type: "collabAgentToolCall",
+          id: "call-collab-prompt-title",
+          tool: "spawnAgent",
+          status: "completed",
+          senderThreadId: "provider-thread-root-1",
+          receiverThreadIds: ["provider-thread-child-prompt-title"],
+          prompt: "Write a short original limerick about coding for Ratul and return only the limerick.\nKeep it playful.",
+          agentsStates: {},
+        },
+      },
+    });
+
+    const childThread = await (async () => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const readModel = await Effect.runPromise(harness.engine.getReadModel());
+        const found = readModel.threads.find(
+          (thread) => thread.providerThreadId === "provider-thread-child-prompt-title",
+        );
+        if (found) {
+          return found;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("Timed out waiting for prompt-title child thread");
+    })();
+
+    expect(childThread.title).toBe(
+      "Write a short original limerick about coding for Ratul and return only the limer",
+    );
   });
 
   it("parents nested collab children under the sender thread when it already exists locally", async () => {

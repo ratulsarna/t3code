@@ -18,6 +18,7 @@ import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/isRepo.ts";
+import { resolveRuntimeEventTargetThread } from "../runtimeThreadRouting.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ProviderRuntimeIngestionService,
@@ -106,6 +107,10 @@ function asObject(value: unknown): Record<string, unknown> | undefined {
   return value as Record<string, unknown>;
 }
 
+function asArray(value: unknown): ReadonlyArray<unknown> | undefined {
+  return Array.isArray(value) ? value : undefined;
+}
+
 function asStringArray(value: unknown): ReadonlyArray<string> {
   if (!Array.isArray(value)) {
     return [];
@@ -131,6 +136,11 @@ function trimSingleLineTitle(value: string | null | undefined): string | undefin
     return undefined;
   }
   return trimmed.slice(0, 80);
+}
+
+function promptPreviewTitle(value: string | undefined): string | undefined {
+  const firstLine = value?.split("\n")[0];
+  return trimSingleLineTitle(firstLine);
 }
 
 function providerRuntimeStatusFromOrchestrationSession(
@@ -167,6 +177,17 @@ function resolveChildThreadTitle(input: {
   );
 }
 
+function isReplaceableSubagentTitle(
+  thread: OrchestrationReadModel["threads"][number],
+): boolean {
+  if (thread.title === "Subagent") {
+    return true;
+  }
+
+  const firstUserMessage = thread.messages.find((message) => message.role === "user");
+  return promptPreviewTitle(firstUserMessage?.text) === thread.title;
+}
+
 function collabReceiverProviderThreadIdsFromRuntimeEvent(
   event: ProviderRuntimeEvent,
 ): ReadonlyArray<string> {
@@ -195,6 +216,70 @@ function collabSenderProviderThreadIdFromRuntimeEvent(
   const payloadData = asObject(event.payload.data);
   const source = asObject(payloadData?.item) ?? payloadData;
   return asString(source?.senderThreadId);
+}
+
+function collabPromptFromRuntimeEvent(
+  event: ProviderRuntimeEvent,
+): string | undefined {
+  if (
+    (event.type !== "item.started" && event.type !== "item.completed") ||
+    event.payload.itemType !== "collab_agent_tool_call"
+  ) {
+    return undefined;
+  }
+
+  const payloadData = asObject(event.payload.data);
+  const source = asObject(payloadData?.item) ?? payloadData;
+  const prompt = asString(source?.prompt)?.trim();
+  return prompt && prompt.length > 0 ? prompt : undefined;
+}
+
+function collabAgentLabelByProviderThreadIdFromRuntimeEvent(
+  event: ProviderRuntimeEvent,
+): ReadonlyMap<string, string> {
+  if (
+    (event.type !== "item.started" && event.type !== "item.completed") ||
+    event.payload.itemType !== "collab_agent_tool_call"
+  ) {
+    return new Map();
+  }
+
+  const payloadData = asObject(event.payload.data);
+  const source = asObject(payloadData?.item) ?? payloadData;
+  if (!source) {
+    return new Map();
+  }
+
+  const labels = new Map<string, string>();
+  const receiverThreadIds = collabReceiverProviderThreadIdsFromRuntimeEvent(event);
+  const addLabel = (threadIdValue: unknown, labelValue: unknown) => {
+    const threadId = asString(threadIdValue)?.trim();
+    const label = asString(labelValue)?.trim();
+    if (!threadId || !label) {
+      return;
+    }
+    labels.set(threadId, label);
+  };
+
+  addLabel(source.receiverThreadId ?? source.receiver_thread_id, source.receiverAgentNickname ?? source.receiver_agent_nickname);
+  addLabel(source.newThreadId ?? source.new_thread_id, source.newAgentNickname ?? source.new_agent_nickname);
+  if (receiverThreadIds.length === 1) {
+    addLabel(receiverThreadIds[0], source.newAgentNickname ?? source.new_agent_nickname);
+  }
+
+  const receiverAgents = asArray(source.receiverAgents ?? source.receiver_agents);
+  for (const entry of receiverAgents ?? []) {
+    const agent = asObject(entry);
+    if (!agent) {
+      continue;
+    }
+    addLabel(
+      agent.threadId ?? agent.thread_id ?? agent.id,
+      agent.agentNickname ?? agent.agent_nickname ?? agent.nickname ?? agent.name,
+    );
+  }
+
+  return labels;
 }
 
 function normalizeRuntimeTurnState(
@@ -709,22 +794,37 @@ const make = Effect.gen(function* () {
         (entry) => entry.providerThreadId === parentProviderThreadId && entry.deletedAt === null,
       ) ?? input.parentThread;
     const parentBinding = yield* providerSessionDirectory.getBinding(effectiveParentThread.id);
+    const prompt = collabPromptFromRuntimeEvent(input.event);
+    const collabLabels = collabAgentLabelByProviderThreadIdFromRuntimeEvent(input.event);
 
     for (const providerThreadId of receiverProviderThreadIds) {
       const existingChild = input.readModel.threads.find(
         (entry) => entry.providerThreadId === providerThreadId && entry.deletedAt === null,
       );
       if (existingChild) {
+        const upgradedTitle = collabLabels.get(providerThreadId);
+        if (isReplaceableSubagentTitle(existingChild) && upgradedTitle) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.meta.update",
+            commandId: providerCommandId(input.event, "thread-collab-title-upgrade"),
+            threadId: existingChild.id,
+            title: upgradedTitle,
+          });
+        }
         continue;
       }
 
       const childThreadId = ThreadId.makeUnsafe(crypto.randomUUID());
+      const childTitle =
+        collabLabels.get(providerThreadId) ??
+        promptPreviewTitle(prompt) ??
+        "Subagent";
       yield* orchestrationEngine.dispatch({
         type: "thread.materialize",
         commandId: providerCommandId(input.event, "thread-materialize-collab"),
         threadId: childThreadId,
         projectId: effectiveParentThread.projectId,
-        title: "Subagent",
+        title: childTitle,
         model: effectiveParentThread.model,
         runtimeMode: effectiveParentThread.runtimeMode,
         interactionMode: effectiveParentThread.interactionMode,
@@ -751,6 +851,21 @@ const make = Effect.gen(function* () {
           ? { runtimePayload: parentBinding.value.runtimePayload }
           : {}),
       });
+
+      if (prompt) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.message.import",
+          commandId: providerCommandId(input.event, "thread-message-import"),
+          threadId: childThreadId,
+          messageId: MessageId.makeUnsafe(
+            `provider-import:${providerThreadId}:${input.event.itemId ?? input.event.eventId}:prompt`,
+          ),
+          role: "user",
+          text: prompt,
+          turnId: null,
+          createdAt: input.event.createdAt,
+        });
+      }
     }
   });
 
@@ -1016,18 +1131,24 @@ const make = Effect.gen(function* () {
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
-      const parentThread = readModel.threads.find((entry) => entry.id === event.threadId);
-      if (!parentThread) return;
+      const sourceThread = readModel.threads.find((entry) => entry.id === event.threadId);
+      if (!sourceThread) return;
       yield* materializeCollabSubagentThreadsForRuntimeEvent({
         event,
         readModel,
-        parentThread,
+        parentThread: sourceThread,
       });
-      const thread = yield* materializeSubagentThreadForRuntimeEvent({
+      yield* materializeSubagentThreadForRuntimeEvent({
         event,
         readModel,
-        parentThread,
+        parentThread: sourceThread,
       });
+
+      const nextReadModel = yield* orchestrationEngine.getReadModel();
+      const thread = resolveRuntimeEventTargetThread(nextReadModel, event);
+      if (!thread) {
+        return;
+      }
 
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
@@ -1105,8 +1226,12 @@ const make = Effect.gen(function* () {
               : (thread.session?.lastError ?? null);
         const nextProviderThreadId =
           event.type === "thread.started"
-            ? (event.payload.providerThreadId ?? thread.session?.providerThreadId ?? null)
-            : (thread.session?.providerThreadId ?? null);
+            ? (event.payload.providerThreadId ??
+              event.providerThreadId ??
+              thread.session?.providerThreadId ??
+              thread.providerThreadId ??
+              null)
+            : (event.providerThreadId ?? thread.session?.providerThreadId ?? thread.providerThreadId ?? null);
 
         if (shouldApplyThreadLifecycle) {
           yield* orchestrationEngine.dispatch({
@@ -1302,6 +1427,22 @@ const make = Effect.gen(function* () {
           threadId: thread.id,
           title: event.payload.name,
         });
+      }
+
+      if (event.type === "thread.started" && isReplaceableSubagentTitle(thread)) {
+        const resolvedTitle = resolveChildThreadTitle({
+          name: event.payload.name,
+          preview: event.payload.preview,
+          origin: event.payload.source,
+        });
+        if (resolvedTitle !== "Subagent") {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.meta.update",
+            commandId: providerCommandId(event, "thread-started-title-upgrade"),
+            threadId: thread.id,
+            title: resolvedTitle,
+          });
+        }
       }
 
       if (event.type === "turn.diff.updated") {

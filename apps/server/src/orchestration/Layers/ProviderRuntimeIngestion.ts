@@ -178,8 +178,8 @@ function collabReceiverProviderThreadIdsFromRuntimeEvent(
   }
 
   const payloadData = asObject(event.payload.data);
-  const item = asObject(payloadData?.item);
-  return asStringArray(item?.receiverThreadIds);
+  const source = asObject(payloadData?.item) ?? payloadData;
+  return asStringArray(source?.receiverThreadIds);
 }
 
 function collabSenderProviderThreadIdFromRuntimeEvent(
@@ -193,8 +193,8 @@ function collabSenderProviderThreadIdFromRuntimeEvent(
   }
 
   const payloadData = asObject(event.payload.data);
-  const item = asObject(payloadData?.item);
-  return asString(item?.senderThreadId);
+  const source = asObject(payloadData?.item) ?? payloadData;
+  return asString(source?.senderThreadId);
 }
 
 function normalizeRuntimeTurnState(

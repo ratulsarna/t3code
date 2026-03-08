@@ -23,6 +23,7 @@ export default Effect.gen(function* () {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_projection_threads_provider_thread_id
     ON projection_threads(provider_thread_id)
     WHERE provider_thread_id IS NOT NULL
+      AND deleted_at IS NULL
   `;
 
   yield* sql`

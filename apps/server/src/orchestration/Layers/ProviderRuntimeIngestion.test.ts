@@ -1589,4 +1589,70 @@ async function createHarness() {
       expect(binding.value.runtimeMode).toBe("approval-required");
     }
   });
+
+  it("materializes collab subagent receiver threads from tool-call lifecycle events", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-collab-subagent-started"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-collab-root"),
+      itemId: asItemId("call-collab-1"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "inProgress",
+        data: {
+          item: {
+            type: "collabAgentToolCall",
+            id: "call-collab-1",
+            tool: "wait",
+            status: "inProgress",
+            senderThreadId: "provider-thread-root-1",
+            receiverThreadIds: ["provider-thread-child-collab-1"],
+            prompt: null,
+            agentsStates: {},
+          },
+          threadId: "provider-thread-root-1",
+          turnId: "turn-collab-root",
+        },
+      },
+    });
+
+    const childThread = await (async () => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const readModel = await Effect.runPromise(harness.engine.getReadModel());
+        const found = readModel.threads.find(
+          (thread) => thread.providerThreadId === "provider-thread-child-collab-1",
+        );
+        if (found) {
+          return found;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("Timed out waiting for collab child thread materialization");
+    })();
+
+    expect(childThread.parentThreadId).toBe("thread-1");
+    expect(childThread.origin).toEqual({
+      kind: "subAgentThreadSpawn",
+      parentProviderThreadId: "provider-thread-root-1",
+    });
+    expect(childThread.title).toBe("Subagent");
+    expect(childThread.session).toBeNull();
+
+    const binding = await Effect.runPromise(
+      harness.providerSessionRuntimeRepository.getByThreadId({ threadId: childThread.id }),
+    );
+    expect(binding._tag).toBe("Some");
+    if (binding._tag === "Some") {
+      expect(binding.value.providerName).toBe("codex");
+      expect(binding.value.resumeCursor).toEqual({ threadId: "provider-thread-child-collab-1" });
+      expect(binding.value.runtimeMode).toBe("approval-required");
+    }
+  });
 });

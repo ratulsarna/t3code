@@ -27,3 +27,22 @@ export function resolveRuntimeEventTargetThread(
     (thread) => thread.id === event.threadId && thread.deletedAt === null,
   );
 }
+
+export function resolveRuntimeEventCleanupThread(
+  readModel: OrchestrationReadModel,
+  event: ProviderRuntimeEvent,
+): OrchestrationReadModel["threads"][number] | undefined {
+  const providerThreadId =
+    event.providerThreadId ??
+    (event.type === "thread.started" ? event.payload.providerThreadId : undefined);
+  if (providerThreadId) {
+    const matchedThread = readModel.threads.find(
+      (thread) => thread.providerThreadId === providerThreadId,
+    );
+    if (matchedThread) {
+      return matchedThread;
+    }
+  }
+
+  return readModel.threads.find((thread) => thread.id === event.threadId);
+}

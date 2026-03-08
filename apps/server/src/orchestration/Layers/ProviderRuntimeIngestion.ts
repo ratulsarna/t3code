@@ -18,7 +18,10 @@ import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/isRepo.ts";
-import { resolveRuntimeEventTargetThread } from "../runtimeThreadRouting.ts";
+import {
+  resolveRuntimeEventCleanupThread,
+  resolveRuntimeEventTargetThread,
+} from "../runtimeThreadRouting.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ProviderRuntimeIngestionService,
@@ -1192,7 +1195,15 @@ const make = Effect.gen(function* () {
       const sourceThread = readModel.threads.find(
         (entry) => entry.id === event.threadId && entry.deletedAt === null,
       );
-      if (!sourceThread) return;
+      const cleanupThread =
+        !sourceThread && event.type === "session.exited"
+          ? resolveRuntimeEventCleanupThread(readModel, event)
+          : undefined;
+      if (!sourceThread && !cleanupThread) return;
+      if (!sourceThread) {
+        yield* clearTurnStateForSession(cleanupThread!.id);
+        return;
+      }
       yield* materializeCollabSubagentThreadsForRuntimeEvent({
         event,
         readModel,
@@ -1207,6 +1218,12 @@ const make = Effect.gen(function* () {
       const nextReadModel = yield* orchestrationEngine.getReadModel();
       const thread = resolveRuntimeEventTargetThread(nextReadModel, event);
       if (!thread) {
+        if (event.type === "session.exited") {
+          const deletedCleanupThread = resolveRuntimeEventCleanupThread(nextReadModel, event);
+          if (deletedCleanupThread) {
+            yield* clearTurnStateForSession(deletedCleanupThread.id);
+          }
+        }
         return;
       }
 

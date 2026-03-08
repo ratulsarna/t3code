@@ -92,6 +92,16 @@ export interface ProviderServiceShape {
   ) => Effect.Effect<ProviderAdapterCapabilities, ProviderServiceError>;
 
   /**
+   * Stop a live adapter session if one exists for the given thread.
+   * Binding-independent — checks adapter runtime state directly.
+   * No-ops if no live session is found. Used for best-effort cleanup
+   * when the persisted binding may already be removed.
+   */
+  readonly stopLiveSessionIfPresent: (input: {
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
    * Roll back provider conversation state by a number of turns.
    */
   readonly rollbackConversation: (input: {

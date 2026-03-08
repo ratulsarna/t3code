@@ -257,6 +257,13 @@ export function projectEvent(
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
+            ...(payload.providerThreadId !== undefined
+              ? { providerThreadId: payload.providerThreadId }
+              : {}),
+            ...(payload.parentThreadId !== undefined
+              ? { parentThreadId: payload.parentThreadId }
+              : {}),
+            ...(payload.origin !== undefined ? { origin: payload.origin } : {}),
             latestTurn: null,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,

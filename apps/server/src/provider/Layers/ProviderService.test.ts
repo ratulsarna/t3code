@@ -49,6 +49,35 @@ const asEventId = (value: string): EventId => EventId.makeUnsafe(value);
 const asThreadId = (value: string): ThreadId => ThreadId.makeUnsafe(value);
 const asTurnId = (value: string): TurnId => TurnId.makeUnsafe(value);
 
+function assertRecoveredStartPayload(
+  payload: unknown,
+  expected: {
+    provider: ProviderKind;
+    cwd: string;
+    resumeCursor: unknown;
+    runtimeMode: "approval-required" | "full-access";
+    threadId: ThreadId;
+  },
+): void {
+  assert.equal(typeof payload === "object" && payload !== null, true);
+  if (!payload || typeof payload !== "object") {
+    return;
+  }
+
+  const startPayload = payload as {
+    provider?: string;
+    cwd?: string;
+    resumeCursor?: unknown;
+    runtimeMode?: "approval-required" | "full-access";
+    threadId?: string;
+  };
+  assert.equal(startPayload.provider, expected.provider);
+  assert.equal(startPayload.cwd, expected.cwd);
+  assert.deepEqual(startPayload.resumeCursor, expected.resumeCursor);
+  assert.equal(startPayload.runtimeMode, expected.runtimeMode);
+  assert.equal(startPayload.threadId, expected.threadId);
+}
+
 type LegacyProviderRuntimeEvent = {
   readonly type: string;
   readonly eventId: EventId;
@@ -126,10 +155,19 @@ function makeFakeCodexAdapter(provider: ProviderKind = "codex") {
   );
 
   const stopSession = vi.fn(
-    (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
-      Effect.sync(() => {
+    (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> => {
+      if (!sessions.has(threadId)) {
+        return Effect.fail(
+          new ProviderAdapterSessionNotFoundError({
+            provider,
+            threadId,
+          }),
+        );
+      }
+      return Effect.sync(() => {
         sessions.delete(threadId);
-      }),
+      });
+    },
   );
 
   const listSessions = vi.fn(
@@ -573,6 +611,190 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("recovers child-thread sendTurn using the child's persisted binding", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+
+      const parent = yield* provider.startSession(asThreadId("thread-parent"), {
+        provider: "codex",
+        threadId: asThreadId("thread-parent"),
+        cwd: "/tmp/project-parent",
+        runtimeMode: "full-access",
+      });
+      const child = yield* provider.startSession(asThreadId("thread-child"), {
+        provider: "codex",
+        threadId: asThreadId("thread-child"),
+        cwd: "/tmp/project-child",
+        runtimeMode: "approval-required",
+      });
+
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+
+      yield* provider.sendTurn({
+        threadId: child.threadId,
+        input: "resume child",
+        attachments: [],
+      });
+
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+      assertRecoveredStartPayload(routing.codex.startSession.mock.calls[0]?.[0], {
+        provider: "codex",
+        cwd: "/tmp/project-child",
+        resumeCursor: child.resumeCursor,
+        runtimeMode: "approval-required",
+        threadId: child.threadId,
+      });
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      assert.equal(routing.codex.sendTurn.mock.calls[0]?.[0]?.threadId, child.threadId);
+
+      const parentRuntime = yield* runtimeRepository.getByThreadId({ threadId: parent.threadId });
+      const childRuntime = yield* runtimeRepository.getByThreadId({ threadId: child.threadId });
+      assert.equal(Option.isSome(parentRuntime), true);
+      assert.equal(Option.isSome(childRuntime), true);
+      if (Option.isSome(parentRuntime)) {
+        assert.deepEqual(parentRuntime.value.resumeCursor, parent.resumeCursor);
+        assert.equal(parentRuntime.value.runtimeMode, "full-access");
+      }
+      if (Option.isSome(childRuntime)) {
+        assert.deepEqual(childRuntime.value.resumeCursor, child.resumeCursor);
+        assert.equal(childRuntime.value.runtimeMode, "approval-required");
+      }
+    }),
+  );
+
+  it.effect("recovers child-thread interruptTurn using the child's persisted binding", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+
+      yield* provider.startSession(asThreadId("thread-parent-interrupt"), {
+        provider: "codex",
+        threadId: asThreadId("thread-parent-interrupt"),
+        cwd: "/tmp/project-parent-interrupt",
+        runtimeMode: "full-access",
+      });
+      const child = yield* provider.startSession(asThreadId("thread-child-interrupt"), {
+        provider: "codex",
+        threadId: asThreadId("thread-child-interrupt"),
+        cwd: "/tmp/project-child-interrupt",
+        runtimeMode: "approval-required",
+      });
+
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      routing.codex.interruptTurn.mockClear();
+
+      yield* provider.interruptTurn({
+        threadId: child.threadId,
+        turnId: asTurnId("turn-child-interrupt"),
+      });
+
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+      assertRecoveredStartPayload(routing.codex.startSession.mock.calls[0]?.[0], {
+        provider: "codex",
+        cwd: "/tmp/project-child-interrupt",
+        resumeCursor: child.resumeCursor,
+        runtimeMode: "approval-required",
+        threadId: child.threadId,
+      });
+      assert.deepEqual(routing.codex.interruptTurn.mock.calls, [
+        [child.threadId, asTurnId("turn-child-interrupt")],
+      ]);
+    }),
+  );
+
+  it.effect("recovers child-thread approval responses using the child's persisted binding", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+
+      yield* provider.startSession(asThreadId("thread-parent-approval"), {
+        provider: "codex",
+        threadId: asThreadId("thread-parent-approval"),
+        cwd: "/tmp/project-parent-approval",
+        runtimeMode: "full-access",
+      });
+      const child = yield* provider.startSession(asThreadId("thread-child-approval"), {
+        provider: "codex",
+        threadId: asThreadId("thread-child-approval"),
+        cwd: "/tmp/project-child-approval",
+        runtimeMode: "approval-required",
+      });
+
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      routing.codex.respondToRequest.mockClear();
+
+      yield* provider.respondToRequest({
+        threadId: child.threadId,
+        requestId: asRequestId("req-child-approval"),
+        decision: "acceptForSession",
+      });
+
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+      assertRecoveredStartPayload(routing.codex.startSession.mock.calls[0]?.[0], {
+        provider: "codex",
+        cwd: "/tmp/project-child-approval",
+        resumeCursor: child.resumeCursor,
+        runtimeMode: "approval-required",
+        threadId: child.threadId,
+      });
+      assert.deepEqual(routing.codex.respondToRequest.mock.calls, [
+        [child.threadId, asRequestId("req-child-approval"), "acceptForSession"],
+      ]);
+    }),
+  );
+
+  it.effect("recovers child-thread user-input responses using the child's persisted binding", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+
+      yield* provider.startSession(asThreadId("thread-parent-user-input"), {
+        provider: "codex",
+        threadId: asThreadId("thread-parent-user-input"),
+        cwd: "/tmp/project-parent-user-input",
+        runtimeMode: "full-access",
+      });
+      const child = yield* provider.startSession(asThreadId("thread-child-user-input"), {
+        provider: "codex",
+        threadId: asThreadId("thread-child-user-input"),
+        cwd: "/tmp/project-child-user-input",
+        runtimeMode: "approval-required",
+      });
+
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      routing.codex.respondToUserInput.mockClear();
+
+      yield* provider.respondToUserInput({
+        threadId: child.threadId,
+        requestId: asRequestId("req-child-user-input"),
+        answers: {
+          sandbox_mode: "workspace-write",
+        },
+      });
+
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+      assertRecoveredStartPayload(routing.codex.startSession.mock.calls[0]?.[0], {
+        provider: "codex",
+        cwd: "/tmp/project-child-user-input",
+        resumeCursor: child.resumeCursor,
+        runtimeMode: "approval-required",
+        threadId: child.threadId,
+      });
+      assert.deepEqual(routing.codex.respondToUserInput.mock.calls, [
+        [
+          child.threadId,
+          asRequestId("req-child-user-input"),
+          {
+            sandbox_mode: "workspace-write",
+          },
+        ],
+      ]);
+    }),
+  );
+
   it.effect("lists no sessions after adapter runtime clears", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
@@ -637,6 +859,58 @@ routing.layer("ProviderServiceLive routing", (it) => {
       }
 
     }),
+  );
+
+  it.effect(
+    "stopLiveSessionIfPresent stops an active adapter session without needing a binding",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const directory = yield* ProviderSessionDirectory;
+
+        // Start a session (creates binding + live adapter session).
+        yield* provider.startSession(asThreadId("thread-live-stop"), {
+          provider: "codex",
+          threadId: asThreadId("thread-live-stop"),
+          cwd: "/tmp/project",
+          runtimeMode: "full-access",
+        });
+
+        // Delete the binding manually, simulating Phase 3a cleanup.
+        yield* directory.remove(asThreadId("thread-live-stop"));
+
+        // Verify the binding is gone.
+        const bindingAfterRemove = yield* directory.getBinding(asThreadId("thread-live-stop"));
+        assert.equal(Option.isNone(bindingAfterRemove), true);
+
+        // Stop the live session without needing the binding.
+        yield* provider.stopLiveSessionIfPresent({ threadId: asThreadId("thread-live-stop") });
+
+        // Verify the adapter's stopSession was called.
+        const stopCalls = routing.codex.stopSession.mock.calls;
+        const stoppedThreadIds = stopCalls.map(
+          (call: Array<unknown>) => call[0],
+        );
+        assert.equal(stoppedThreadIds.includes(asThreadId("thread-live-stop")), true);
+      }),
+  );
+
+  it.effect(
+    "stopLiveSessionIfPresent no-ops when no live session exists",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const stopCallsBefore = routing.codex.stopSession.mock.calls.length;
+
+        // Call with a threadId that has no live session.
+        yield* provider.stopLiveSessionIfPresent({ threadId: asThreadId("thread-nonexistent") });
+
+        // The adapter stop is attempted directly, but not-found is swallowed.
+        assert.equal(routing.codex.stopSession.mock.calls.length, stopCallsBefore + 1);
+        assert.deepEqual(routing.codex.stopSession.mock.calls.at(-1), [
+          asThreadId("thread-nonexistent"),
+        ]);
+      }),
   );
 });
 

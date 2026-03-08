@@ -2,6 +2,7 @@ import type {
   OrchestrationCommand,
   OrchestrationEvent,
   OrchestrationReadModel,
+  ThreadId,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
 
@@ -15,6 +16,10 @@ import {
 
 const nowIso = () => new Date().toISOString();
 const DEFAULT_ASSISTANT_DELIVERY_MODE = "buffered" as const;
+type MaterializableThreadCommand = Extract<
+  OrchestrationCommand,
+  { type: "thread.create" | "thread.materialize" }
+>;
 
 const defaultMetadata: Omit<OrchestrationEvent, "sequence" | "type" | "payload"> = {
   eventId: crypto.randomUUID() as OrchestrationEvent["eventId"],
@@ -45,6 +50,70 @@ function withEventBase(
     correlationId: input.commandId,
     metadata: input.metadata ?? {},
   };
+}
+
+function toThreadCreatedPayload(input: {
+  readonly threadId: MaterializableThreadCommand["threadId"];
+  readonly projectId: MaterializableThreadCommand["projectId"];
+  readonly title: string;
+  readonly model: string;
+  readonly runtimeMode: "approval-required" | "full-access";
+  readonly interactionMode: "default" | "plan";
+  readonly branch: string | null;
+  readonly worktreePath: string | null;
+  readonly createdAt: string;
+  readonly providerThreadId?: string | null | undefined;
+  readonly parentThreadId?: MaterializableThreadCommand["threadId"] | null | undefined;
+  readonly origin?: import("@t3tools/contracts").ThreadOrigin | null | undefined;
+}) {
+  return {
+    threadId: input.threadId,
+    projectId: input.projectId,
+    title: input.title,
+    model: input.model,
+    runtimeMode: input.runtimeMode,
+    interactionMode: input.interactionMode,
+    branch: input.branch,
+    worktreePath: input.worktreePath,
+    ...(input.providerThreadId !== undefined ? { providerThreadId: input.providerThreadId } : {}),
+    ...(input.parentThreadId !== undefined ? { parentThreadId: input.parentThreadId } : {}),
+    ...(input.origin !== undefined ? { origin: input.origin } : {}),
+    createdAt: input.createdAt,
+    updatedAt: input.createdAt,
+  };
+}
+
+function liveDescendantThreadIdsInDeleteOrder(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly rootThreadId: ThreadId;
+}): ReadonlyArray<ThreadId> {
+  const childIdsByParentId = new Map<ThreadId, Array<ThreadId>>();
+  for (const thread of input.readModel.threads) {
+    if (thread.deletedAt !== null || thread.parentThreadId == null) {
+      continue;
+    }
+    const parentThreadId = thread.parentThreadId;
+    const existingChildIds = childIdsByParentId.get(parentThreadId) ?? [];
+    existingChildIds.push(thread.id);
+    childIdsByParentId.set(parentThreadId, existingChildIds);
+  }
+
+  const visited = new Set<ThreadId>();
+  const orderedThreadIds: Array<ThreadId> = [];
+
+  const visit = (threadId: ThreadId) => {
+    if (visited.has(threadId)) {
+      return;
+    }
+    visited.add(threadId);
+    for (const childThreadId of childIdsByParentId.get(threadId) ?? []) {
+      visit(childThreadId);
+    }
+    orderedThreadIds.push(threadId);
+  };
+
+  visit(input.rootThreadId);
+  return orderedThreadIds;
 }
 
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
@@ -152,41 +221,60 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandId: command.commandId,
         }),
         type: "thread.created",
-        payload: {
-          threadId: command.threadId,
-          projectId: command.projectId,
-          title: command.title,
-          model: command.model,
-          runtimeMode: command.runtimeMode,
-          interactionMode: command.interactionMode,
-          branch: command.branch,
-          worktreePath: command.worktreePath,
-          createdAt: command.createdAt,
-          updatedAt: command.createdAt,
-        },
+        payload: toThreadCreatedPayload(command),
+      };
+    }
+
+    case "thread.materialize": {
+      yield* requireProject({
+        readModel,
+        command,
+        projectId: command.projectId,
+      });
+      yield* requireThreadAbsent({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.created",
+        payload: toThreadCreatedPayload(command),
       };
     }
 
     case "thread.delete": {
-      yield* requireThread({
+      const rootThread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = nowIso();
-      return {
-        ...withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt,
-          commandId: command.commandId,
-        }),
-        type: "thread.deleted",
-        payload: {
-          threadId: command.threadId,
-          deletedAt: occurredAt,
-        },
-      };
+      const events: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      for (const threadId of liveDescendantThreadIdsInDeleteOrder({
+        readModel,
+        rootThreadId: rootThread.id,
+      })) {
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.deleted",
+          payload: {
+            threadId,
+            deletedAt: occurredAt,
+          },
+        });
+      }
+      return events;
     }
 
     case "thread.meta.update": {
@@ -501,6 +589,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           messageId: command.messageId,
           role: "assistant",
           text: "",
+          turnId: command.turnId ?? null,
+          streaming: false,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.message.import": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.message-sent",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          role: command.role,
+          text: command.text,
           turnId: command.turnId ?? null,
           streaming: false,
           createdAt: command.createdAt,

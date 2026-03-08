@@ -1141,10 +1141,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     });
 
     if (notification.method === "thread/started") {
-      const providerThreadId = normalizeProviderThreadId(
-        this.readString(this.readObject(notification.params)?.thread, "id"),
-      );
-      if (providerThreadId) {
+      const params = this.readObject(notification.params);
+      const thread = this.readObject(params?.thread);
+      const source = this.readObject(thread?.source);
+      const subagent = this.readObject(source?.subagent);
+      const isSpawnedSubagent = this.readObject(subagent?.thread_spawn) !== undefined;
+      const providerThreadId = normalizeProviderThreadId(this.readString(thread, "id"));
+      if (providerThreadId && !isSpawnedSubagent) {
         this.updateSession(context, { resumeCursor: { threadId: providerThreadId } });
       }
       return;

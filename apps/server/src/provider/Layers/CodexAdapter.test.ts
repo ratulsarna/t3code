@@ -407,6 +407,339 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("maps thread/started with spawned subagent metadata into canonical thread.started events", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-thread-started-subagent"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "thread/started",
+        payload: {
+          thread: {
+            id: "provider-thread-1",
+            name: null,
+            preview: "",
+            status: {
+              type: "active",
+              activeFlags: [],
+            },
+            source: {
+              subagent: {
+                thread_spawn: {
+                  parent_thread_id: "provider-parent-1",
+                  depth: 2,
+                  agent_nickname: null,
+                  agent_role: "explorer",
+                },
+              },
+            },
+            agentNickname: "Atlas",
+            agentRole: "explorer",
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "thread.started");
+      if (firstEvent.value.type !== "thread.started") {
+        return;
+      }
+      assert.deepEqual(firstEvent.value.payload, {
+        providerThreadId: "provider-thread-1",
+        name: null,
+        preview: "",
+        status: {
+          type: "active",
+          activeFlags: [],
+        },
+        source: {
+          kind: "subAgentThreadSpawn",
+          parentProviderThreadId: "provider-parent-1",
+          depth: 2,
+          agentNickname: "Atlas",
+          agentRole: "explorer",
+        },
+      });
+    }),
+  );
+
+  it.effect("falls back to top-level threadId when mapping thread/started events", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-thread-started-fallback"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "thread/started",
+        payload: {
+          threadId: "provider-thread-2",
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "thread.started");
+      if (firstEvent.value.type !== "thread.started") {
+        return;
+      }
+      assert.deepEqual(firstEvent.value.payload, {
+        providerThreadId: "provider-thread-2",
+      });
+      assert.equal(firstEvent.value.providerThreadId, "provider-thread-2");
+    }),
+  );
+
+  it.effect("maps top-level providerThreadId from payload.threadId on turn lifecycle events", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-turn-started-provider-thread-id"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "turn/started",
+        turnId: asTurnId("turn-1"),
+        payload: {
+          threadId: "provider-thread-child-1",
+          turn: {
+            id: "turn-1",
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "turn.started");
+      if (firstEvent.value.type !== "turn.started") {
+        return;
+      }
+      assert.equal(firstEvent.value.providerThreadId, "provider-thread-child-1");
+    }),
+  );
+
+  it.effect("maps top-level providerThreadId from payload.thread.id on item lifecycle events", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-item-completed-provider-thread-id"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        itemId: asItemId("item-1"),
+        createdAt: new Date().toISOString(),
+        method: "item/completed",
+        payload: {
+          thread: {
+            id: "provider-thread-child-2",
+          },
+          item: {
+            id: "item-1",
+            type: "agent_message",
+            text: "done",
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "item.completed");
+      if (firstEvent.value.type !== "item.completed") {
+        return;
+      }
+      assert.equal(firstEvent.value.providerThreadId, "provider-thread-child-2");
+    }),
+  );
+
+  it.effect("maps top-level providerThreadId from codex event messages", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-task-progress-provider-thread-id"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "codex/event/agent_reasoning",
+        payload: {
+          id: "task-1",
+          msg: {
+            thread_id: "provider-thread-child-3",
+            text: "Thinking",
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "task.progress");
+      if (firstEvent.value.type !== "task.progress") {
+        return;
+      }
+      assert.equal(firstEvent.value.providerThreadId, "provider-thread-child-3");
+    }),
+  );
+
+  it.effect("falls back to payload.conversationId for codex task events without msg.thread_id", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-task-started-conversation-id"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "codex/event/task_started",
+        payload: {
+          id: "task-1",
+          conversationId: "provider-thread-child-4",
+          msg: {
+            collaboration_mode_kind: "plan",
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "task.started");
+      if (firstEvent.value.type !== "task.started") {
+        return;
+      }
+      assert.equal(firstEvent.value.providerThreadId, "provider-thread-child-4");
+    }),
+  );
+
+  it.effect("preserves string-based thread source kinds when top-level agent metadata is explicitly null", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-thread-started-string-source-null-agent-metadata"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "thread/started",
+        payload: {
+          thread: {
+            id: "provider-thread-3",
+            source: "mcp",
+            agentNickname: null,
+            agentRole: null,
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "thread.started");
+      if (firstEvent.value.type !== "thread.started") {
+        return;
+      }
+      assert.deepEqual(firstEvent.value.payload, {
+        providerThreadId: "provider-thread-3",
+        source: {
+          kind: "appServer",
+          agentNickname: null,
+          agentRole: null,
+        },
+      });
+    }),
+  );
+
+  it.effect("ignores thread/started notifications without a recoverable provider thread id", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-thread-started-invalid"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "thread/started",
+        payload: {
+          thread: {
+            name: "Missing id",
+          },
+        },
+      } satisfies ProviderEvent);
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-thread-started-after-invalid"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "thread/started",
+        payload: {
+          threadId: "provider-thread-after-invalid",
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "thread.started");
+      if (firstEvent.value.type !== "thread.started") {
+        return;
+      }
+      assert.deepEqual(firstEvent.value.payload, {
+        providerThreadId: "provider-thread-after-invalid",
+      });
+    }),
+  );
+
   it.effect("preserves request type when mapping serverRequest/resolved", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

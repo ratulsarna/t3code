@@ -34,7 +34,8 @@ type ProviderIntentEvent = Extract<
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
-      | "thread.session-stop-requested";
+      | "thread.session-stop-requested"
+      | "thread.deleted";
   }
 >;
 
@@ -59,6 +60,14 @@ function mapProviderSessionStatusToOrchestrationStatus(
     default:
       return "ready";
   }
+}
+
+function readProviderThreadIdFromResumeCursor(resumeCursor: unknown): string | null {
+  if (!resumeCursor || typeof resumeCursor !== "object" || Array.isArray(resumeCursor)) {
+    return null;
+  }
+  const rawThreadId = (resumeCursor as Record<string, unknown>).threadId;
+  return typeof rawThreadId === "string" && rawThreadId.trim().length > 0 ? rawThreadId : null;
 }
 
 const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
@@ -250,6 +259,11 @@ const make = Effect.gen(function* () {
           threadId,
           status: mapProviderSessionStatusToOrchestrationStatus(session.status),
           providerName: session.provider,
+          providerSessionId: null,
+          providerThreadId:
+            readProviderThreadIdFromResumeCursor(session.resumeCursor) ??
+            thread.session?.providerThreadId ??
+            null,
           runtimeMode: desiredRuntimeMode,
           // Provider turn ids are not orchestration turn ids.
           activeTurnId: null,
@@ -619,6 +633,12 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const processThreadDeleted = Effect.fnUntraced(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.deleted" }>,
+  ) {
+    yield* providerService.stopLiveSessionIfPresent({ threadId: event.payload.threadId });
+  });
+
   const processDomainEvent = (event: ProviderIntentEvent) =>
     Effect.gen(function* () {
       switch (event.type) {
@@ -644,6 +664,9 @@ const make = Effect.gen(function* () {
           return;
         case "thread.session-stop-requested":
           yield* processSessionStopRequested(event);
+          return;
+        case "thread.deleted":
+          yield* processThreadDeleted(event);
           return;
       }
     });
@@ -677,7 +700,8 @@ const make = Effect.gen(function* () {
           event.type !== "thread.turn-interrupt-requested" &&
           event.type !== "thread.approval-response-requested" &&
           event.type !== "thread.user-input-response-requested" &&
-          event.type !== "thread.session-stop-requested"
+          event.type !== "thread.session-stop-requested" &&
+          event.type !== "thread.deleted"
         ) {
           return Effect.void;
         }

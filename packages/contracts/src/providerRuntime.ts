@@ -1,5 +1,9 @@
 import { Schema } from "effect";
 import {
+  ThreadOrigin as SharedThreadStartedSource,
+  ThreadOriginKind as SharedThreadStartedSourceKind,
+} from "./threadOrigin";
+import {
   EventId,
   IsoDateTime,
   ProviderItemId,
@@ -234,6 +238,7 @@ const ProviderRuntimeEventBase = Schema.Struct({
   eventId: EventId,
   provider: ProviderKind,
   threadId: ThreadId,
+  providerThreadId: Schema.optional(TrimmedNonEmptyStringSchema),
   createdAt: IsoDateTime,
   turnId: Schema.optional(TurnId),
   itemId: Schema.optional(RuntimeItemId),
@@ -268,8 +273,18 @@ const SessionExitedPayload = Schema.Struct({
 });
 export type SessionExitedPayload = typeof SessionExitedPayload.Type;
 
+export const ThreadStartedSourceKind = SharedThreadStartedSourceKind;
+export type ThreadStartedSourceKind = typeof ThreadStartedSourceKind.Type;
+
+export const ThreadStartedSource = SharedThreadStartedSource;
+export type ThreadStartedSource = typeof ThreadStartedSource.Type;
+
 const ThreadStartedPayload = Schema.Struct({
   providerThreadId: Schema.optional(TrimmedNonEmptyStringSchema),
+  name: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+  preview: Schema.optional(Schema.NullOr(Schema.String)),
+  status: Schema.optional(Schema.Unknown),
+  source: Schema.optional(ThreadStartedSource),
 });
 export type ThreadStartedPayload = typeof ThreadStartedPayload.Type;
 

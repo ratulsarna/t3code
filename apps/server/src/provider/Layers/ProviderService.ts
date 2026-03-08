@@ -403,6 +403,19 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
       });
 
+    const stopLiveSessionIfPresent: ProviderServiceShape["stopLiveSessionIfPresent"] = (input) =>
+      Effect.forEach(
+        adapters,
+        (adapter) =>
+          adapter.stopSession(input.threadId).pipe(
+            Effect.catchTags({
+              ProviderAdapterSessionNotFoundError: () => Effect.void,
+              ProviderAdapterSessionClosedError: () => Effect.void,
+            }),
+          ),
+        { concurrency: "unbounded", discard: true },
+      ).pipe(Effect.asVoid);
+
     const listSessions: ProviderServiceShape["listSessions"] = () =>
       Effect.gen(function* () {
         const sessionsByProvider = yield* Effect.forEach(adapters, (adapter) => adapter.listSessions());
@@ -514,6 +527,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       respondToRequest,
       respondToUserInput,
       stopSession,
+      stopLiveSessionIfPresent,
       listSessions,
       getCapabilities,
       rollbackConversation,

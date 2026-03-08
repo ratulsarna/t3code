@@ -4,6 +4,8 @@ import {
   CommandId,
   MessageId,
   type OrchestrationEvent,
+  type OrchestrationSession,
+  type OrchestrationReadModel,
   CheckpointRef,
   ThreadId,
   TurnId,
@@ -13,8 +15,13 @@ import {
 import { Cache, Cause, Duration, Effect, Layer, Option, Queue, Ref, Stream } from "effect";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/isRepo.ts";
+import {
+  resolveRuntimeEventCleanupThread,
+  resolveRuntimeEventTargetThread,
+} from "../runtimeThreadRouting.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ProviderRuntimeIngestionService,
@@ -96,12 +103,199 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function asArray(value: unknown): ReadonlyArray<unknown> | undefined {
+  return Array.isArray(value) ? value : undefined;
+}
+
+function asStringArray(value: unknown): ReadonlyArray<string> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return [...new Set(
+    value
+      .map((entry) => asString(entry)?.trim())
+      .filter((entry): entry is string => entry !== undefined && entry.length > 0),
+  )];
+}
+
 function runtimePayloadRecord(event: ProviderRuntimeEvent): Record<string, unknown> | undefined {
   const payload = (event as { payload?: unknown }).payload;
   if (!payload || typeof payload !== "object") {
     return undefined;
   }
   return payload as Record<string, unknown>;
+}
+
+function trimSingleLineTitle(value: string | null | undefined): string | undefined {
+  const trimmed = value?.replace(/\s+/g, " ").trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.slice(0, 80);
+}
+
+function promptPreviewTitle(value: string | undefined): string | undefined {
+  const firstLine = value?.split("\n")[0];
+  return trimSingleLineTitle(firstLine);
+}
+
+function providerRuntimeStatusFromOrchestrationSession(
+  status: OrchestrationSession["status"],
+): "starting" | "running" | "stopped" | "error" {
+  switch (status) {
+    case "starting":
+      return "starting";
+    case "stopped":
+    case "idle":
+      return "stopped";
+    case "error":
+      return "error";
+    case "running":
+    case "ready":
+    case "interrupted":
+    default:
+      return "running";
+  }
+}
+
+function resolveChildThreadTitle(input: {
+  readonly name?: string | null | undefined;
+  readonly preview?: string | null | undefined;
+  readonly origin:
+    | (NonNullable<Extract<ProviderRuntimeEvent, { type: "thread.started" }>["payload"]["source"]>)
+    | undefined;
+}): string {
+  return (
+    trimSingleLineTitle(input.name) ??
+    trimSingleLineTitle(input.origin?.agentNickname) ??
+    trimSingleLineTitle(input.preview) ??
+    "Subagent"
+  );
+}
+
+function isReplaceableSubagentTitle(
+  thread: OrchestrationReadModel["threads"][number],
+): boolean {
+  if (thread.parentThreadId === null) {
+    return false;
+  }
+
+  if (thread.title === "Subagent") {
+    return true;
+  }
+
+  const firstUserMessage = thread.messages.find((message) => message.role === "user");
+  return promptPreviewTitle(firstUserMessage?.text) === thread.title;
+}
+
+function hasSeedUserPrompt(
+  thread: OrchestrationReadModel["threads"][number],
+  prompt: string,
+): boolean {
+  return thread.messages.some(
+    (message) => message.role === "user" && message.turnId === null && message.text === prompt,
+  );
+}
+
+function collabReceiverProviderThreadIdsFromRuntimeEvent(
+  event: ProviderRuntimeEvent,
+): ReadonlyArray<string> {
+  if (
+    (event.type !== "item.started" && event.type !== "item.completed") ||
+    event.payload.itemType !== "collab_agent_tool_call"
+  ) {
+    return [];
+  }
+
+  const payloadData = asObject(event.payload.data);
+  const source = asObject(payloadData?.item) ?? payloadData;
+  return asStringArray(source?.receiverThreadIds);
+}
+
+function collabSenderProviderThreadIdFromRuntimeEvent(
+  event: ProviderRuntimeEvent,
+): string | undefined {
+  if (
+    (event.type !== "item.started" && event.type !== "item.completed") ||
+    event.payload.itemType !== "collab_agent_tool_call"
+  ) {
+    return undefined;
+  }
+
+  const payloadData = asObject(event.payload.data);
+  const source = asObject(payloadData?.item) ?? payloadData;
+  return asString(source?.senderThreadId);
+}
+
+function collabPromptFromRuntimeEvent(
+  event: ProviderRuntimeEvent,
+): string | undefined {
+  if (
+    (event.type !== "item.started" && event.type !== "item.completed") ||
+    event.payload.itemType !== "collab_agent_tool_call"
+  ) {
+    return undefined;
+  }
+
+  const payloadData = asObject(event.payload.data);
+  const source = asObject(payloadData?.item) ?? payloadData;
+  const prompt = asString(source?.prompt)?.trim();
+  return prompt && prompt.length > 0 ? prompt : undefined;
+}
+
+function collabAgentLabelByProviderThreadIdFromRuntimeEvent(
+  event: ProviderRuntimeEvent,
+): ReadonlyMap<string, string> {
+  if (
+    (event.type !== "item.started" && event.type !== "item.completed") ||
+    event.payload.itemType !== "collab_agent_tool_call"
+  ) {
+    return new Map();
+  }
+
+  const payloadData = asObject(event.payload.data);
+  const source = asObject(payloadData?.item) ?? payloadData;
+  if (!source) {
+    return new Map();
+  }
+
+  const labels = new Map<string, string>();
+  const receiverThreadIds = collabReceiverProviderThreadIdsFromRuntimeEvent(event);
+  const addLabel = (threadIdValue: unknown, labelValue: unknown) => {
+    const threadId = asString(threadIdValue)?.trim();
+    const label = asString(labelValue)?.trim();
+    if (!threadId || !label) {
+      return;
+    }
+    labels.set(threadId, label);
+  };
+
+  addLabel(source.receiverThreadId ?? source.receiver_thread_id, source.receiverAgentNickname ?? source.receiver_agent_nickname);
+  addLabel(source.newThreadId ?? source.new_thread_id, source.newAgentNickname ?? source.new_agent_nickname);
+  if (receiverThreadIds.length === 1) {
+    addLabel(receiverThreadIds[0], source.newAgentNickname ?? source.new_agent_nickname);
+  }
+
+  const receiverAgents = asArray(source.receiverAgents ?? source.receiver_agents);
+  for (const entry of receiverAgents ?? []) {
+    const agent = asObject(entry);
+    if (!agent) {
+      continue;
+    }
+    addLabel(
+      agent.threadId ?? agent.thread_id ?? agent.id,
+      agent.agentNickname ?? agent.agent_nickname ?? agent.nickname ?? agent.name,
+    );
+  }
+
+  return labels;
 }
 
 function normalizeRuntimeTurnState(
@@ -486,6 +680,7 @@ function runtimeEventToActivities(
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
+  const providerSessionDirectory = yield* ProviderSessionDirectory;
 
   const assistantDeliveryModeRef = yield* Ref.make<AssistantDeliveryMode>(
     DEFAULT_ASSISTANT_DELIVERY_MODE,
@@ -523,6 +718,216 @@ const make = Effect.gen(function* () {
       return false;
     }
     return isGitRepository(workspaceCwd);
+  });
+
+  const materializeSubagentThreadForRuntimeEvent = Effect.fnUntraced(function* (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly readModel: OrchestrationReadModel;
+    readonly parentThread: OrchestrationReadModel["threads"][number];
+  }) {
+    if (input.event.type !== "thread.started") {
+      return input.parentThread;
+    }
+
+    const source = input.event.payload.source;
+    const providerThreadId = input.event.payload.providerThreadId ?? input.event.providerThreadId;
+    if (!providerThreadId || source?.kind !== "subAgentThreadSpawn") {
+      return input.parentThread;
+    }
+
+    const existingChild = input.readModel.threads.find(
+      (entry) => entry.providerThreadId === providerThreadId && entry.deletedAt === null,
+    );
+    if (existingChild) {
+      return existingChild;
+    }
+
+    const parentBinding = yield* providerSessionDirectory.getBinding(input.parentThread.id);
+    const childThreadId = ThreadId.makeUnsafe(crypto.randomUUID());
+    const childCreatedAt = input.event.createdAt;
+
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.materialize",
+        commandId: providerCommandId(input.event, "thread-materialize"),
+        threadId: childThreadId,
+        projectId: input.parentThread.projectId,
+        title: resolveChildThreadTitle({
+          name: input.event.payload.name,
+          preview: input.event.payload.preview,
+          origin: source,
+        }),
+        model: input.parentThread.model,
+        runtimeMode: input.parentThread.runtimeMode,
+        interactionMode: input.parentThread.interactionMode,
+        branch: null,
+        worktreePath: null,
+        providerThreadId,
+        parentThreadId: input.parentThread.id,
+        origin: source,
+        createdAt: childCreatedAt,
+      })
+      .pipe(
+        Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+          Effect.logWarning("Suppressed duplicate thread.materialize for child thread", {
+            providerThreadId,
+            detail: error.detail,
+          }),
+        ),
+      );
+
+    const nextReadModel = yield* orchestrationEngine.getReadModel();
+    const resolvedChild =
+      nextReadModel.threads.find((entry) => entry.id === childThreadId) ??
+      nextReadModel.threads.find(
+        (entry) => entry.providerThreadId === providerThreadId && entry.deletedAt === null,
+      );
+    if (!resolvedChild) {
+      return input.parentThread;
+    }
+
+    yield* providerSessionDirectory.upsert({
+      threadId: resolvedChild.id,
+      provider: input.event.provider,
+      runtimeMode: input.parentThread.runtimeMode,
+      status: providerRuntimeStatusFromOrchestrationSession(
+        input.parentThread.session?.status ?? "ready",
+      ),
+      resumeCursor: { threadId: providerThreadId },
+      ...(Option.isSome(parentBinding) && parentBinding.value.runtimePayload !== null
+        ? { runtimePayload: parentBinding.value.runtimePayload }
+        : {}),
+    });
+
+    return resolvedChild;
+  });
+
+  const materializeCollabSubagentThreadsForRuntimeEvent = Effect.fnUntraced(function* (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly readModel: OrchestrationReadModel;
+    readonly parentThread: OrchestrationReadModel["threads"][number];
+  }) {
+    const receiverProviderThreadIds = collabReceiverProviderThreadIdsFromRuntimeEvent(input.event);
+    if (receiverProviderThreadIds.length === 0) {
+      return;
+    }
+
+    const parentProviderThreadId =
+      collabSenderProviderThreadIdFromRuntimeEvent(input.event) ??
+      input.parentThread.providerThreadId ??
+      input.parentThread.session?.providerThreadId ??
+      undefined;
+    const effectiveParentThread =
+      input.readModel.threads.find(
+        (entry) => entry.providerThreadId === parentProviderThreadId && entry.deletedAt === null,
+      ) ?? input.parentThread;
+    const parentBinding = yield* providerSessionDirectory.getBinding(effectiveParentThread.id);
+    const prompt = collabPromptFromRuntimeEvent(input.event);
+    const collabLabels = collabAgentLabelByProviderThreadIdFromRuntimeEvent(input.event);
+
+    for (const providerThreadId of receiverProviderThreadIds) {
+      const existingChild = input.readModel.threads.find(
+        (entry) => entry.providerThreadId === providerThreadId && entry.deletedAt === null,
+      );
+      if (existingChild) {
+        const upgradedTitle = collabLabels.get(providerThreadId);
+        if (isReplaceableSubagentTitle(existingChild) && upgradedTitle) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.meta.update",
+            commandId: providerCommandId(input.event, "thread-collab-title-upgrade"),
+            threadId: existingChild.id,
+            title: upgradedTitle,
+          });
+        }
+        if (prompt && !hasSeedUserPrompt(existingChild, prompt)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.message.import",
+            commandId: providerCommandId(input.event, "thread-collab-prompt-backfill"),
+            threadId: existingChild.id,
+            messageId: MessageId.makeUnsafe(
+              `provider-import:${providerThreadId}:${input.event.itemId ?? input.event.eventId}:prompt`,
+            ),
+            role: "user",
+            text: prompt,
+            turnId: null,
+            createdAt: input.event.createdAt,
+          });
+        }
+        continue;
+      }
+
+      const childThreadId = ThreadId.makeUnsafe(crypto.randomUUID());
+      const childTitle =
+        collabLabels.get(providerThreadId) ??
+        promptPreviewTitle(prompt) ??
+        "Subagent";
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.materialize",
+          commandId: providerCommandId(input.event, "thread-materialize-collab"),
+          threadId: childThreadId,
+          projectId: effectiveParentThread.projectId,
+          title: childTitle,
+          model: effectiveParentThread.model,
+          runtimeMode: effectiveParentThread.runtimeMode,
+          interactionMode: effectiveParentThread.interactionMode,
+          branch: null,
+          worktreePath: null,
+          providerThreadId,
+          parentThreadId: effectiveParentThread.id,
+          origin: {
+            kind: "subAgentThreadSpawn",
+            ...(parentProviderThreadId ? { parentProviderThreadId } : {}),
+          },
+          createdAt: input.event.createdAt,
+        })
+        .pipe(
+          Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+            Effect.logWarning("Suppressed duplicate thread.materialize for collab child thread", {
+              providerThreadId,
+              detail: error.detail,
+            }),
+          ),
+        );
+
+      const nextReadModel = yield* orchestrationEngine.getReadModel();
+      const resolvedChild =
+        nextReadModel.threads.find((entry) => entry.id === childThreadId) ??
+        nextReadModel.threads.find(
+          (entry) => entry.providerThreadId === providerThreadId && entry.deletedAt === null,
+        );
+      if (!resolvedChild) {
+        continue;
+      }
+
+      yield* providerSessionDirectory.upsert({
+        threadId: resolvedChild.id,
+        provider: input.event.provider,
+        runtimeMode: effectiveParentThread.runtimeMode,
+        status: providerRuntimeStatusFromOrchestrationSession(
+          effectiveParentThread.session?.status ?? "ready",
+        ),
+        resumeCursor: { threadId: providerThreadId },
+        ...(Option.isSome(parentBinding) && parentBinding.value.runtimePayload !== null
+          ? { runtimePayload: parentBinding.value.runtimePayload }
+          : {}),
+      });
+
+      if (prompt) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.message.import",
+          commandId: providerCommandId(input.event, "thread-message-import"),
+          threadId: resolvedChild.id,
+          messageId: MessageId.makeUnsafe(
+            `provider-import:${providerThreadId}:${input.event.itemId ?? input.event.eventId}:prompt`,
+          ),
+          role: "user",
+          text: prompt,
+          turnId: null,
+          createdAt: input.event.createdAt,
+        });
+      }
+    }
   });
 
   const rememberAssistantMessageId = (
@@ -787,12 +1192,50 @@ const make = Effect.gen(function* () {
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
-      const thread = readModel.threads.find((entry) => entry.id === event.threadId);
-      if (!thread) return;
+      const sourceThread = readModel.threads.find(
+        (entry) => entry.id === event.threadId && entry.deletedAt === null,
+      );
+      const cleanupThread =
+        !sourceThread && event.type === "session.exited"
+          ? resolveRuntimeEventCleanupThread(readModel, event)
+          : undefined;
+      if (!sourceThread && !cleanupThread) return;
+      if (!sourceThread) {
+        yield* clearTurnStateForSession(cleanupThread!.id);
+        return;
+      }
+      yield* materializeCollabSubagentThreadsForRuntimeEvent({
+        event,
+        readModel,
+        parentThread: sourceThread,
+      });
+      yield* materializeSubagentThreadForRuntimeEvent({
+        event,
+        readModel,
+        parentThread: sourceThread,
+      });
+
+      const nextReadModel = yield* orchestrationEngine.getReadModel();
+      const thread = resolveRuntimeEventTargetThread(nextReadModel, event);
+      if (!thread) {
+        if (event.type === "session.exited") {
+          const deletedCleanupThread = resolveRuntimeEventCleanupThread(nextReadModel, event);
+          if (deletedCleanupThread) {
+            yield* clearTurnStateForSession(deletedCleanupThread.id);
+          }
+        }
+        return;
+      }
 
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
+      const resolvedProviderThreadId =
+        event.providerThreadId &&
+        (thread.providerThreadId === event.providerThreadId ||
+          thread.session?.providerThreadId === event.providerThreadId)
+          ? event.providerThreadId
+          : undefined;
 
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
@@ -864,6 +1307,17 @@ const make = Effect.gen(function* () {
               : status === "ready"
               ? null
               : (thread.session?.lastError ?? null);
+        const nextProviderThreadId =
+          event.type === "thread.started"
+            ? (event.payload.providerThreadId ??
+              resolvedProviderThreadId ??
+              thread.session?.providerThreadId ??
+              thread.providerThreadId ??
+              null)
+            : (resolvedProviderThreadId ??
+              thread.session?.providerThreadId ??
+              thread.providerThreadId ??
+              null);
 
         if (shouldApplyThreadLifecycle) {
           yield* orchestrationEngine.dispatch({
@@ -874,6 +1328,8 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status,
               providerName: event.provider,
+              providerSessionId: thread.session?.providerSessionId ?? null,
+              providerThreadId: nextProviderThreadId,
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
               lastError,
@@ -1038,6 +1494,8 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status: "error",
               providerName: event.provider,
+              providerSessionId: thread.session?.providerSessionId ?? null,
+              providerThreadId: thread.session?.providerThreadId ?? null,
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,
@@ -1055,6 +1513,22 @@ const make = Effect.gen(function* () {
           threadId: thread.id,
           title: event.payload.name,
         });
+      }
+
+      if (event.type === "thread.started" && isReplaceableSubagentTitle(thread)) {
+        const resolvedTitle = resolveChildThreadTitle({
+          name: event.payload.name,
+          preview: event.payload.preview,
+          origin: event.payload.source,
+        });
+        if (resolvedTitle !== "Subagent") {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.meta.update",
+            commandId: providerCommandId(event, "thread-started-title-upgrade"),
+            threadId: thread.id,
+            title: resolvedTitle,
+          });
+        }
       }
 
       if (event.type === "turn.diff.updated") {

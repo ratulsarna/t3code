@@ -9,5 +9,6 @@ export * from "./keybindings";
 export * from "./server";
 export * from "./git";
 export * from "./orchestration";
+export * from "./threadOrigin";
 export * from "./editor";
 export * from "./project";

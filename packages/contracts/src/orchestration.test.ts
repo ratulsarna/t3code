@@ -158,6 +158,42 @@ it.effect("decodes thread.created runtime mode for historical events", () =>
   }),
 );
 
+it.effect("decodes provider-backed thread materialization fields", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadCreatedPayload({
+      threadId: "thread-child-1",
+      projectId: "project-1",
+      title: "Subagent",
+      model: "gpt-5.4",
+      runtimeMode: "full-access",
+      interactionMode: "plan",
+      branch: null,
+      worktreePath: null,
+      providerThreadId: "provider-thread-child-1",
+      parentThreadId: "thread-parent-1",
+      origin: {
+        kind: "subAgentThreadSpawn",
+        parentProviderThreadId: "provider-thread-parent-1",
+        depth: 1,
+        agentNickname: null,
+        agentRole: "reviewer",
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.providerThreadId, "provider-thread-child-1");
+    assert.strictEqual(parsed.parentThreadId, "thread-parent-1");
+    assert.deepStrictEqual(parsed.origin, {
+      kind: "subAgentThreadSpawn",
+      parentProviderThreadId: "provider-thread-parent-1",
+      depth: 1,
+      agentNickname: null,
+      agentRole: "reviewer",
+    });
+  }),
+);
+
 it.effect("accepts provider-scoped model options in thread.turn.start", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadTurnStartCommand({
@@ -214,5 +250,23 @@ it.effect("decodes orchestration session runtime mode defaults", () =>
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
     assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
+  }),
+);
+
+it.effect("decodes orchestration session provider identifiers", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationSession({
+      threadId: "thread-1",
+      status: "ready",
+      providerName: "codex",
+      providerSessionId: null,
+      providerThreadId: "provider-thread-1",
+      runtimeMode: "approval-required",
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.providerThreadId, "provider-thread-1");
+    assert.strictEqual(parsed.providerSessionId, null);
   }),
 );

@@ -182,6 +182,7 @@ describe("ProviderCommandReactor", () => {
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
+      stopLiveSessionIfPresent: vi.fn(() => Effect.void) as unknown as ProviderServiceShape["stopLiveSessionIfPresent"],
       listSessions: () => Effect.succeed(runtimeSessions),
       getCapabilities: (provider) =>
         Effect.succeed({
@@ -250,6 +251,7 @@ describe("ProviderCommandReactor", () => {
       respondToRequest,
       respondToUserInput,
       stopSession,
+      stopLiveSessionIfPresent: service.stopLiveSessionIfPresent as unknown as ReturnType<typeof vi.fn>,
       renameBranch,
       generateBranchName,
       stateDir,
@@ -1172,5 +1174,53 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.status).toBe("stopped");
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.activeTurnId).toBeNull();
+  });
+
+  it("stops live provider session when a thread is deleted", async () => {
+    const harness = await createHarness();
+
+    await materializeChildThread(harness, {
+      threadId: "thread-child-del",
+      providerThreadId: "child-del-ptid",
+    });
+
+    // Delete parent (cascading deletes child + parent).
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.makeUnsafe("cmd-delete-parent"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+      }),
+    );
+
+    // Wait for reactor to process both thread.deleted events.
+    await waitFor(() => (harness.stopLiveSessionIfPresent as ReturnType<typeof vi.fn>).mock.calls.length >= 2);
+
+    const calledThreadIds = (harness.stopLiveSessionIfPresent as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call: Array<{ threadId: string }>) => call[0]?.threadId,
+    );
+    expect(calledThreadIds).toContain("thread-child-del");
+    expect(calledThreadIds).toContain("thread-1");
+  });
+
+  it("tolerates thread deletion when no live provider session exists", async () => {
+    const harness = await createHarness();
+
+    // Delete the parent thread (no live session started).
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.makeUnsafe("cmd-delete-no-session"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+      }),
+    );
+
+    await waitFor(() => (harness.stopLiveSessionIfPresent as ReturnType<typeof vi.fn>).mock.calls.length >= 1);
+
+    // Should not crash — the mock returns Effect.void.
+    const calledThreadIds = (harness.stopLiveSessionIfPresent as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call: Array<{ threadId: string }>) => call[0]?.threadId,
+    );
+    expect(calledThreadIds).toContain("thread-1");
   });
 });

@@ -23,5 +23,7 @@ export function resolveRuntimeEventTargetThread(
     }
   }
 
-  return readModel.threads.find((thread) => thread.id === event.threadId);
+  return readModel.threads.find(
+    (thread) => thread.id === event.threadId && thread.deletedAt === null,
+  );
 }

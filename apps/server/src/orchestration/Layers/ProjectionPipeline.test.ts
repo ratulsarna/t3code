@@ -1805,6 +1805,96 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
       ]);
     }),
   );
+
+  it.effect(
+    "removes provider_session_runtime binding when thread.deleted is projected",
+    () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const now = new Date().toISOString();
+        const threadId = ThreadId.makeUnsafe("thread-binding-cleanup");
+
+        // Insert a provider_session_runtime row for the thread.
+        yield* sql`
+          INSERT INTO provider_session_runtime (thread_id, provider_name, adapter_key, runtime_mode, status, last_seen_at, runtime_payload_json)
+          VALUES (${threadId}, 'codex', 'codex-default', 'full-access', 'active', ${now}, '{}')
+        `;
+
+        // Verify the binding exists.
+        const before = yield* sql<{ readonly count: number }>`
+          SELECT COUNT(*) AS "count" FROM provider_session_runtime WHERE thread_id = ${threadId}
+        `;
+        assert.equal(before[0]?.count, 1);
+
+        // Append and project a thread.deleted event.
+        yield* eventStore.append({
+          type: "thread.deleted",
+          eventId: EventId.makeUnsafe("evt-binding-cleanup-1"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: CommandId.makeUnsafe("cmd-binding-cleanup-1"),
+          causationEventId: null,
+          correlationId: CorrelationId.makeUnsafe("cmd-binding-cleanup-1"),
+          metadata: {},
+          payload: {
+            threadId,
+            deletedAt: now,
+          },
+        });
+        yield* projectionPipeline.bootstrap;
+
+        // Assert the binding is gone.
+        const after = yield* sql<{ readonly count: number }>`
+          SELECT COUNT(*) AS "count" FROM provider_session_runtime WHERE thread_id = ${threadId}
+        `;
+        assert.equal(after[0]?.count, 0);
+      }),
+  );
+
+  it.effect(
+    "tolerates thread.deleted projection when no provider binding exists",
+    () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const now = new Date().toISOString();
+        const threadId = ThreadId.makeUnsafe("thread-no-binding");
+
+        // Verify no binding exists for this thread.
+        const before = yield* sql<{ readonly count: number }>`
+          SELECT COUNT(*) AS "count" FROM provider_session_runtime WHERE thread_id = ${threadId}
+        `;
+        assert.equal(before[0]?.count, 0);
+
+        // Append and project a thread.deleted event — should not crash.
+        yield* eventStore.append({
+          type: "thread.deleted",
+          eventId: EventId.makeUnsafe("evt-no-binding-1"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: CommandId.makeUnsafe("cmd-no-binding-1"),
+          causationEventId: null,
+          correlationId: CorrelationId.makeUnsafe("cmd-no-binding-1"),
+          metadata: {},
+          payload: {
+            threadId,
+            deletedAt: now,
+          },
+        });
+        yield* projectionPipeline.bootstrap;
+
+        // Still no binding, no crash.
+        const after = yield* sql<{ readonly count: number }>`
+          SELECT COUNT(*) AS "count" FROM provider_session_runtime WHERE thread_id = ${threadId}
+        `;
+        assert.equal(after[0]?.count, 0);
+      }),
+  );
 });
 
 it.effect("restores pending turn-start metadata across projection pipeline restart", () =>

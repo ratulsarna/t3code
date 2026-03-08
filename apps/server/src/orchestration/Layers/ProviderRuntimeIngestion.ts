@@ -743,26 +743,35 @@ const make = Effect.gen(function* () {
     const childThreadId = ThreadId.makeUnsafe(crypto.randomUUID());
     const childCreatedAt = input.event.createdAt;
 
-    yield* orchestrationEngine.dispatch({
-      type: "thread.materialize",
-      commandId: providerCommandId(input.event, "thread-materialize"),
-      threadId: childThreadId,
-      projectId: input.parentThread.projectId,
-      title: resolveChildThreadTitle({
-        name: input.event.payload.name,
-        preview: input.event.payload.preview,
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.materialize",
+        commandId: providerCommandId(input.event, "thread-materialize"),
+        threadId: childThreadId,
+        projectId: input.parentThread.projectId,
+        title: resolveChildThreadTitle({
+          name: input.event.payload.name,
+          preview: input.event.payload.preview,
+          origin: source,
+        }),
+        model: input.parentThread.model,
+        runtimeMode: input.parentThread.runtimeMode,
+        interactionMode: input.parentThread.interactionMode,
+        branch: null,
+        worktreePath: null,
+        providerThreadId,
+        parentThreadId: input.parentThread.id,
         origin: source,
-      }),
-      model: input.parentThread.model,
-      runtimeMode: input.parentThread.runtimeMode,
-      interactionMode: input.parentThread.interactionMode,
-      branch: null,
-      worktreePath: null,
-      providerThreadId,
-      parentThreadId: input.parentThread.id,
-      origin: source,
-      createdAt: childCreatedAt,
-    });
+        createdAt: childCreatedAt,
+      })
+      .pipe(
+        Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+          Effect.logWarning("Suppressed duplicate thread.materialize for child thread", {
+            providerThreadId,
+            detail: error.detail,
+          }),
+        ),
+      );
 
     yield* providerSessionDirectory.upsert({
       threadId: childThreadId,
@@ -846,25 +855,34 @@ const make = Effect.gen(function* () {
         collabLabels.get(providerThreadId) ??
         promptPreviewTitle(prompt) ??
         "Subagent";
-      yield* orchestrationEngine.dispatch({
-        type: "thread.materialize",
-        commandId: providerCommandId(input.event, "thread-materialize-collab"),
-        threadId: childThreadId,
-        projectId: effectiveParentThread.projectId,
-        title: childTitle,
-        model: effectiveParentThread.model,
-        runtimeMode: effectiveParentThread.runtimeMode,
-        interactionMode: effectiveParentThread.interactionMode,
-        branch: null,
-        worktreePath: null,
-        providerThreadId,
-        parentThreadId: effectiveParentThread.id,
-        origin: {
-          kind: "subAgentThreadSpawn",
-          ...(parentProviderThreadId ? { parentProviderThreadId } : {}),
-        },
-        createdAt: input.event.createdAt,
-      });
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.materialize",
+          commandId: providerCommandId(input.event, "thread-materialize-collab"),
+          threadId: childThreadId,
+          projectId: effectiveParentThread.projectId,
+          title: childTitle,
+          model: effectiveParentThread.model,
+          runtimeMode: effectiveParentThread.runtimeMode,
+          interactionMode: effectiveParentThread.interactionMode,
+          branch: null,
+          worktreePath: null,
+          providerThreadId,
+          parentThreadId: effectiveParentThread.id,
+          origin: {
+            kind: "subAgentThreadSpawn",
+            ...(parentProviderThreadId ? { parentProviderThreadId } : {}),
+          },
+          createdAt: input.event.createdAt,
+        })
+        .pipe(
+          Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+            Effect.logWarning("Suppressed duplicate thread.materialize for collab child thread", {
+              providerThreadId,
+              detail: error.detail,
+            }),
+          ),
+        );
 
       yield* providerSessionDirectory.upsert({
         threadId: childThreadId,
@@ -1158,7 +1176,9 @@ const make = Effect.gen(function* () {
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
-      const sourceThread = readModel.threads.find((entry) => entry.id === event.threadId);
+      const sourceThread = readModel.threads.find(
+        (entry) => entry.id === event.threadId && entry.deletedAt === null,
+      );
       if (!sourceThread) return;
       yield* materializeCollabSubagentThreadsForRuntimeEvent({
         event,

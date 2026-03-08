@@ -851,6 +851,55 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
     }),
   );
+
+  it.effect(
+    "stopLiveSessionIfPresent stops an active adapter session without needing a binding",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const directory = yield* ProviderSessionDirectory;
+
+        // Start a session (creates binding + live adapter session).
+        yield* provider.startSession(asThreadId("thread-live-stop"), {
+          provider: "codex",
+          threadId: asThreadId("thread-live-stop"),
+          cwd: "/tmp/project",
+          runtimeMode: "full-access",
+        });
+
+        // Delete the binding manually, simulating Phase 3a cleanup.
+        yield* directory.remove(asThreadId("thread-live-stop"));
+
+        // Verify the binding is gone.
+        const bindingAfterRemove = yield* directory.getBinding(asThreadId("thread-live-stop"));
+        assert.equal(Option.isNone(bindingAfterRemove), true);
+
+        // Stop the live session without needing the binding.
+        yield* provider.stopLiveSessionIfPresent({ threadId: asThreadId("thread-live-stop") });
+
+        // Verify the adapter's stopSession was called.
+        const stopCalls = routing.codex.stopSession.mock.calls;
+        const stoppedThreadIds = stopCalls.map(
+          (call: Array<unknown>) => call[0],
+        );
+        assert.equal(stoppedThreadIds.includes(asThreadId("thread-live-stop")), true);
+      }),
+  );
+
+  it.effect(
+    "stopLiveSessionIfPresent no-ops when no live session exists",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const stopCallsBefore = routing.codex.stopSession.mock.calls.length;
+
+        // Call with a threadId that has no live session.
+        yield* provider.stopLiveSessionIfPresent({ threadId: asThreadId("thread-nonexistent") });
+
+        // No additional stopSession calls should have been made.
+        assert.equal(routing.codex.stopSession.mock.calls.length, stopCallsBefore);
+      }),
+  );
 });
 
 const fanout = makeProviderServiceLayer();

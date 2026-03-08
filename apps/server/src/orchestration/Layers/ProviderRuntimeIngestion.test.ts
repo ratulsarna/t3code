@@ -535,6 +535,42 @@ async function createHarness() {
     );
   });
 
+  it("does not overwrite the parent providerThreadId when unknown child events fall back to the parent", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "thread.started",
+      eventId: asEventId("evt-thread-started-root-provider-id"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: {
+        providerThreadId: "provider-thread-root-1",
+      },
+    });
+
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.providerThreadId === "provider-thread-root-1",
+    );
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-unknown-child-fallback"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerThreadId: "provider-thread-child-unresolved",
+      turnId: asTurnId("turn-child-unresolved"),
+    });
+
+    await Effect.runPromise(Effect.sleep("40 millis"));
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const parentThread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
+    expect(parentThread?.session?.providerThreadId).toBe("provider-thread-root-1");
+  });
+
   it("maps canonical content delta/item completed into finalized assistant messages", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

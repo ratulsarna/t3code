@@ -1153,6 +1153,12 @@ const make = Effect.gen(function* () {
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
+      const resolvedProviderThreadId =
+        event.providerThreadId &&
+        (thread.providerThreadId === event.providerThreadId ||
+          thread.session?.providerThreadId === event.providerThreadId)
+          ? event.providerThreadId
+          : undefined;
 
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
@@ -1227,11 +1233,14 @@ const make = Effect.gen(function* () {
         const nextProviderThreadId =
           event.type === "thread.started"
             ? (event.payload.providerThreadId ??
-              event.providerThreadId ??
+              resolvedProviderThreadId ??
               thread.session?.providerThreadId ??
               thread.providerThreadId ??
               null)
-            : (event.providerThreadId ?? thread.session?.providerThreadId ?? thread.providerThreadId ?? null);
+            : (resolvedProviderThreadId ??
+              thread.session?.providerThreadId ??
+              thread.providerThreadId ??
+              null);
 
         if (shouldApplyThreadLifecycle) {
           yield* orchestrationEngine.dispatch({

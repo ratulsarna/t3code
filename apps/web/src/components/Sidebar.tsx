@@ -28,8 +28,7 @@ import { APP_STAGE_LABEL } from "../branding";
 import { newCommandId, newProjectId, newThreadId } from "../lib/utils";
 import { useStore } from "../store";
 import { isChatNewLocalShortcut, isChatNewShortcut, shortcutLabelForCommand } from "../keybindings";
-import { type Thread } from "../types";
-import { derivePendingApprovals } from "../session-logic";
+import { derivePendingApprovals, derivePendingUserInputs } from "../session-logic";
 import { gitRemoveWorktreeMutationOptions, gitStatusQueryOptions } from "../lib/gitReactQuery";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { readNativeApi } from "../nativeApi";
@@ -73,6 +72,7 @@ import {
   selectVisibleSidebarRootNodes,
   type SidebarThreadTreeNode,
 } from "./sidebarTree";
+import { resolveThreadStatusPill } from "./Sidebar.logic";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const THREAD_PREVIEW_LIMIT = 6;
@@ -94,13 +94,6 @@ function formatRelativeTime(iso: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-interface ThreadStatusPill {
-  label: "Working" | "Connecting" | "Completed" | "Pending Approval";
-  colorClass: string;
-  dotClass: string;
-  pulse: boolean;
-}
-
 interface TerminalStatusIndicator {
   label: "Terminal process running";
   colorClass: string;
@@ -115,57 +108,6 @@ interface PrStatusIndicator {
 }
 
 type ThreadPr = GitStatusResult["pr"];
-
-function hasUnseenCompletion(thread: Thread): boolean {
-  if (!thread.latestTurn?.completedAt) return false;
-  const completedAt = Date.parse(thread.latestTurn.completedAt);
-  if (Number.isNaN(completedAt)) return false;
-  if (!thread.lastVisitedAt) return true;
-
-  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
-  if (Number.isNaN(lastVisitedAt)) return true;
-  return completedAt > lastVisitedAt;
-}
-
-function threadStatusPill(thread: Thread, hasPendingApprovals: boolean): ThreadStatusPill | null {
-  if (hasPendingApprovals) {
-    return {
-      label: "Pending Approval",
-      colorClass: "text-amber-600 dark:text-amber-300/90",
-      dotClass: "bg-amber-500 dark:bg-amber-300/90",
-      pulse: false,
-    };
-  }
-
-  if (thread.session?.status === "running") {
-    return {
-      label: "Working",
-      colorClass: "text-sky-600 dark:text-sky-300/80",
-      dotClass: "bg-sky-500 dark:bg-sky-300/80",
-      pulse: true,
-    };
-  }
-
-  if (thread.session?.status === "connecting") {
-    return {
-      label: "Connecting",
-      colorClass: "text-sky-600 dark:text-sky-300/80",
-      dotClass: "bg-sky-500 dark:bg-sky-300/80",
-      pulse: true,
-    };
-  }
-
-  if (hasUnseenCompletion(thread)) {
-    return {
-      label: "Completed",
-      colorClass: "text-emerald-600 dark:text-emerald-300/90",
-      dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
-      pulse: false,
-    };
-  }
-
-  return null;
-}
 
 function terminalStatusFromRunningIds(
   runningTerminalIds: string[],
@@ -320,10 +262,19 @@ export default function Sidebar() {
   const renamingCommittedRef = useRef(false);
   const renamingInputRef = useRef<HTMLInputElement | null>(null);
   const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
+  const shouldBrowseForProjectImmediately = isElectron;
+  const shouldShowProjectPathEntry = addingProject && !shouldBrowseForProjectImmediately;
   const pendingApprovalByThreadId = useMemo(() => {
     const map = new Map<ThreadId, boolean>();
     for (const thread of threads) {
       map.set(thread.id, derivePendingApprovals(thread.activities).length > 0);
+    }
+    return map;
+  }, [threads]);
+  const pendingUserInputByThreadId = useMemo(() => {
+    const map = new Map<ThreadId, boolean>();
+    for (const thread of threads) {
+      map.set(thread.id, derivePendingUserInputs(thread.activities).length > 0);
     }
     return map;
   }, [threads]);
@@ -531,15 +482,29 @@ export default function Sidebar() {
         });
         await handleNewThread(projectId).catch(() => undefined);
       } catch (error) {
+        const description =
+          error instanceof Error ? error.message : "An error occurred while adding the project.";
         setIsAddingProject(false);
-        setAddProjectError(
-          error instanceof Error ? error.message : "An error occurred while adding the project.",
-        );
+        if (shouldBrowseForProjectImmediately) {
+          toastManager.add({
+            type: "error",
+            title: "Failed to add project",
+            description,
+          });
+        } else {
+          setAddProjectError(description);
+        }
         return;
       }
       finishAddingProject();
     },
-    [focusMostRecentThreadForProject, handleNewThread, isAddingProject, projects],
+    [
+      focusMostRecentThreadForProject,
+      handleNewThread,
+      isAddingProject,
+      projects,
+      shouldBrowseForProjectImmediately,
+    ],
   );
 
   const handleAddProject = () => {
@@ -558,10 +523,19 @@ export default function Sidebar() {
     }
     if (pickedPath) {
       await addProjectFromPath(pickedPath);
-    } else {
+    } else if (!shouldBrowseForProjectImmediately) {
       addProjectInputRef.current?.focus();
     }
     setIsPickingFolder(false);
+  };
+
+  const handleStartAddProject = () => {
+    setAddProjectError(null);
+    if (shouldBrowseForProjectImmediately) {
+      void handlePickFolder();
+      return;
+    }
+    setAddingProject((prev) => !prev);
   };
 
   const cancelRename = useCallback(() => {
@@ -949,10 +923,11 @@ export default function Sidebar() {
     ): React.ReactNode => {
       const thread = node.thread;
       const isActive = routeThreadId === thread.id;
-      const threadStatus = threadStatusPill(
+      const threadStatus = resolveThreadStatusPill({
         thread,
-        pendingApprovalByThreadId.get(thread.id) === true,
-      );
+        hasPendingApprovals: pendingApprovalByThreadId.get(thread.id) === true,
+        hasPendingUserInput: pendingUserInputByThreadId.get(thread.id) === true,
+      });
       const prStatus = prStatusIndicator(prByThreadId.get(thread.id) ?? null);
       const terminalStatus = terminalStatusFromRunningIds(
         selectThreadTerminalState(terminalStateByThreadId, thread.id).runningTerminalIds,
@@ -1145,6 +1120,7 @@ export default function Sidebar() {
       navigate,
       openPrLink,
       pendingApprovalByThreadId,
+      pendingUserInputByThreadId,
       prByThreadId,
       renamingThreadId,
       renamingTitle,
@@ -1313,21 +1289,23 @@ export default function Sidebar() {
                   <button
                     type="button"
                     aria-label="Add project"
+                    aria-pressed={shouldShowProjectPathEntry}
                     className="inline-flex size-5 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
-                    onClick={() => {
-                      setAddingProject((prev) => !prev);
-                      setAddProjectError(null);
-                    }}
+                    onClick={handleStartAddProject}
                   />
                 }
               >
-                <PlusIcon className="size-3.5" />
+                <PlusIcon
+                  className={`size-3.5 transition-transform duration-150 ${
+                    shouldShowProjectPathEntry ? "rotate-45" : "rotate-0"
+                  }`}
+                />
               </TooltipTrigger>
               <TooltipPopup side="right">Add project</TooltipPopup>
             </Tooltip>
           </div>
 
-          {addingProject && (
+          {shouldShowProjectPathEntry && (
             <div className="mb-2 px-1">
               {isElectron && (
                 <button
@@ -1519,7 +1497,7 @@ export default function Sidebar() {
             })}
           </SidebarMenu>
 
-          {projects.length === 0 && !addingProject && (
+          {projects.length === 0 && !shouldShowProjectPathEntry && (
             <div className="px-2 pt-4 text-center text-xs text-muted-foreground/60">
               No projects yet
             </div>

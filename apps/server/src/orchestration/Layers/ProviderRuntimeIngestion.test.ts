@@ -933,6 +933,7 @@ async function createHarness() {
       payload: {
         itemType: "assistant_message",
         status: "completed",
+        detail: "hello live",
       },
     });
 

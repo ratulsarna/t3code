@@ -12,7 +12,8 @@ import {
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
-import { Cache, Cause, Duration, Effect, Layer, Option, Queue, Ref, Stream } from "effect";
+import { Cache, Cause, Duration, Effect, Layer, Option, Ref, Stream } from "effect";
+import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
@@ -404,9 +405,9 @@ function runtimeEventToActivities(
               ? "Command approval requested"
               : requestKind === "file-read"
                 ? "File-read approval requested"
-              : requestKind === "file-change"
-                ? "File-change approval requested"
-                : "Approval requested",
+                : requestKind === "file-change"
+                  ? "File-change approval requested"
+                  : "Approval requested",
           payload: {
             requestId: toApprovalRequestId(event.requestId),
             ...(requestKind ? { requestKind } : {}),
@@ -492,7 +493,9 @@ function runtimeEventToActivities(
           summary: "Plan updated",
           payload: {
             plan: event.payload.plan,
-            ...(event.payload.explanation !== undefined ? { explanation: event.payload.explanation } : {}),
+            ...(event.payload.explanation !== undefined
+              ? { explanation: event.payload.explanation }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -552,7 +555,9 @@ function runtimeEventToActivities(
           payload: {
             taskId: event.payload.taskId,
             ...(event.payload.taskType ? { taskType: event.payload.taskType } : {}),
-            ...(event.payload.description ? { detail: truncateDetail(event.payload.description) } : {}),
+            ...(event.payload.description
+              ? { detail: truncateDetail(event.payload.description) }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -952,11 +957,7 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const forgetAssistantMessageId = (
-    threadId: ThreadId,
-    turnId: TurnId,
-    messageId: MessageId,
-  ) =>
+  const forgetAssistantMessageId = (threadId: ThreadId, turnId: TurnId, messageId: MessageId) =>
     Cache.getOption(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId)).pipe(
       Effect.flatMap((existingIds) =>
         Option.match(existingIds, {
@@ -1021,7 +1022,8 @@ const make = Effect.gen(function* () {
         const existing = Option.getOrUndefined(existingEntry);
         return Cache.set(bufferedProposedPlanById, planId, {
           text: `${existing?.text ?? ""}${delta}`,
-          createdAt: existing?.createdAt && existing.createdAt.length > 0 ? existing.createdAt : createdAt,
+          createdAt:
+            existing?.createdAt && existing.createdAt.length > 0 ? existing.createdAt : createdAt,
         });
       }),
     );
@@ -1038,7 +1040,8 @@ const make = Effect.gen(function* () {
   const clearBufferedProposedPlan = (planId: string) =>
     Cache.invalidate(bufferedProposedPlanById, planId);
 
-  const clearAssistantMessageState = (messageId: MessageId) => clearBufferedAssistantText(messageId);
+  const clearAssistantMessageState = (messageId: MessageId) =>
+    clearBufferedAssistantText(messageId);
 
   const finalizeAssistantMessage = (input: {
     event: ProviderRuntimeEvent;
@@ -1305,8 +1308,8 @@ const make = Effect.gen(function* () {
             : event.type === "turn.completed" && runtimeTurnState(event) === "failed"
               ? (runtimeTurnErrorMessage(event) ?? thread.session?.lastError ?? "Turn failed")
               : status === "ready"
-              ? null
-              : (thread.session?.lastError ?? null);
+                ? null
+                : (thread.session?.lastError ?? null);
         const nextProviderThreadId =
           event.type === "thread.started"
             ? (event.payload.providerThreadId ??
@@ -1391,7 +1394,9 @@ const make = Effect.gen(function* () {
       const assistantCompletion =
         event.type === "item.completed" && event.payload.itemType === "assistant_message"
           ? {
-              messageId: MessageId.makeUnsafe(`assistant:${event.itemId ?? event.turnId ?? event.eventId}`),
+              messageId: MessageId.makeUnsafe(
+                `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
+              ),
               fallbackText: event.payload.detail,
             }
           : undefined;
@@ -1407,10 +1412,11 @@ const make = Effect.gen(function* () {
       if (assistantCompletion) {
         const assistantMessageId = assistantCompletion.messageId;
         const turnId = toTurnId(event.turnId);
-        const existingAssistantMessage = thread.messages.find((entry) => entry.id === assistantMessageId);
+        const existingAssistantMessage = thread.messages.find(
+          (entry) => entry.id === assistantMessageId,
+        );
         const shouldApplyFallbackCompletionText =
-          !existingAssistantMessage ||
-          existingAssistantMessage.text.length === 0;
+          !existingAssistantMessage || existingAssistantMessage.text.length === 0;
         if (turnId) {
           yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
         }
@@ -1485,9 +1491,7 @@ const make = Effect.gen(function* () {
 
         const shouldApplyRuntimeError = !STRICT_PROVIDER_LIFECYCLE_GUARD
           ? true
-          : activeTurnId === null ||
-            eventTurnId === undefined ||
-            sameId(activeTurnId, eventTurnId);
+          : activeTurnId === null || eventTurnId === undefined || sameId(activeTurnId, eventTurnId);
 
         if (shouldApplyRuntimeError) {
           yield* orchestrationEngine.dispatch({
@@ -1538,22 +1542,34 @@ const make = Effect.gen(function* () {
       if (event.type === "turn.diff.updated") {
         const turnId = toTurnId(event.turnId);
         if (turnId && (yield* isGitRepoForThread(thread.id))) {
-          const assistantMessageId = MessageId.makeUnsafe(
-            `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
-          );
-          yield* orchestrationEngine.dispatch({
-            type: "thread.turn.diff.complete",
-            commandId: providerCommandId(event, "thread-turn-diff-complete"),
-            threadId: thread.id,
-            turnId,
-            completedAt: now,
-            checkpointRef: CheckpointRef.makeUnsafe(`provider-diff:${event.eventId}`),
-            status: "missing",
-            files: [],
-            assistantMessageId,
-            checkpointTurnCount: thread.checkpoints.length + 1,
-            createdAt: now,
-          });
+          // Skip if a checkpoint already exists for this turn. A real
+          // (non-placeholder) capture from CheckpointReactor should not
+          // be clobbered, and dispatching a duplicate placeholder for the
+          // same turnId would produce an unstable checkpointTurnCount.
+          if (thread.checkpoints.some((c) => c.turnId === turnId)) {
+            // Already tracked; no-op.
+          } else {
+            const assistantMessageId = MessageId.makeUnsafe(
+              `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
+            );
+            const maxTurnCount = thread.checkpoints.reduce(
+              (max, c) => Math.max(max, c.checkpointTurnCount),
+              0,
+            );
+            yield* orchestrationEngine.dispatch({
+              type: "thread.turn.diff.complete",
+              commandId: providerCommandId(event, "thread-turn-diff-complete"),
+              threadId: thread.id,
+              turnId,
+              completedAt: now,
+              checkpointRef: CheckpointRef.makeUnsafe(`provider-diff:${event.eventId}`),
+              status: "missing",
+              files: [],
+              assistantMessageId,
+              checkpointTurnCount: maxTurnCount + 1,
+              createdAt: now,
+            });
+          }
         }
       }
 
@@ -1593,16 +1609,12 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const start: ProviderRuntimeIngestionShape["start"] = Effect.gen(function* () {
-    const inputQueue = yield* Queue.unbounded<RuntimeIngestionInput>();
-    yield* Effect.addFinalizer(() => Queue.shutdown(inputQueue).pipe(Effect.asVoid));
+  const worker = yield* makeDrainableWorker(processInputSafely);
 
-    yield* Effect.forkScoped(
-      Effect.forever(Queue.take(inputQueue).pipe(Effect.flatMap(processInputSafely))),
-    );
+  const start: ProviderRuntimeIngestionShape["start"] = Effect.gen(function* () {
     yield* Effect.forkScoped(
       Stream.runForEach(providerService.streamEvents, (event) =>
-        Queue.offer(inputQueue, { source: "runtime", event }).pipe(Effect.asVoid),
+        worker.enqueue({ source: "runtime", event }),
       ),
     );
     yield* Effect.forkScoped(
@@ -1610,13 +1622,14 @@ const make = Effect.gen(function* () {
         if (event.type !== "thread.turn-start-requested") {
           return Effect.void;
         }
-        return Queue.offer(inputQueue, { source: "domain", event }).pipe(Effect.asVoid);
+        return worker.enqueue({ source: "domain", event });
       }),
     );
   });
 
   return {
     start,
+    drain: worker.drain,
   } satisfies ProviderRuntimeIngestionShape;
 });
 

@@ -178,7 +178,7 @@ async function createHarness() {
     );
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start.pipe(Scope.provide(scope)));
-    await Effect.runPromise(Effect.sleep("10 millis"));
+    const drain = () => Effect.runPromise(ingestion.drain);
 
     const createdAt = new Date().toISOString();
     await Effect.runPromise(
@@ -229,6 +229,7 @@ async function createHarness() {
       engine,
       emit: provider.emit,
       providerSessionRuntimeRepository,
+      drain,
     };
   }
 
@@ -440,9 +441,11 @@ async function createHarness() {
       threadId: asThreadId("thread-1"),
     });
 
-    await Effect.runPromise(Effect.sleep("40 millis"));
+    await harness.drain();
     const midReadModel = await Effect.runPromise(harness.engine.getReadModel());
-    const midThread = midReadModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
+    const midThread = midReadModel.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+    );
     expect(midThread?.session?.status).toBe("running");
     expect(midThread?.session?.activeTurnId).toBe("turn-midturn-lifecycle");
 
@@ -491,7 +494,7 @@ async function createHarness() {
       status: "completed",
     });
 
-    await Effect.runPromise(Effect.sleep("40 millis"));
+    await harness.drain();
     const midReadModel = await Effect.runPromise(harness.engine.getReadModel());
     const midThread = midReadModel.threads.find(
       (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
@@ -545,7 +548,7 @@ async function createHarness() {
       status: "completed",
     });
 
-    await Effect.runPromise(Effect.sleep("40 millis"));
+    await harness.drain();
     const midReadModel = await Effect.runPromise(harness.engine.getReadModel());
     const midThread = midReadModel.threads.find(
       (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
@@ -719,7 +722,9 @@ async function createHarness() {
     const proposedPlan = thread.proposedPlans.find(
       (entry: ProviderRuntimeTestProposedPlan) => entry.id === "plan:thread-1:turn:turn-plan-final",
     );
-    expect(proposedPlan?.planMarkdown).toBe("## Ship plan\n\n- wire projection\n- render follow-up");
+    expect(proposedPlan?.planMarkdown).toBe(
+      "## Ship plan\n\n- wire projection\n- render follow-up",
+    );
   });
 
   it("finalizes buffered proposed-plan deltas into a first-class proposed plan on turn completion", async () => {
@@ -782,7 +787,8 @@ async function createHarness() {
       ),
     );
     const proposedPlan = thread.proposedPlans.find(
-      (entry: ProviderRuntimeTestProposedPlan) => entry.id === "plan:thread-1:turn:turn-plan-buffer",
+      (entry: ProviderRuntimeTestProposedPlan) =>
+        entry.id === "plan:thread-1:turn:turn-plan-buffer",
     );
     expect(proposedPlan?.planMarkdown).toBe("## Buffered plan\n\n- first\n- second");
   });
@@ -819,7 +825,7 @@ async function createHarness() {
       },
     });
 
-    await Effect.runPromise(Effect.sleep("30 millis"));
+    await harness.drain();
     const midReadModel = await Effect.runPromise(harness.engine.getReadModel());
     const midThread = midReadModel.threads.find(
       (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
@@ -878,7 +884,7 @@ async function createHarness() {
         createdAt: now,
       }),
     );
-    await Effect.runPromise(Effect.sleep("30 millis"));
+    await harness.drain();
 
     harness.emit({
       type: "turn.started",

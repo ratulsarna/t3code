@@ -7,6 +7,7 @@ import {
   type OrchestrationSession,
   type OrchestrationReadModel,
   CheckpointRef,
+  isToolLifecycleItemType,
   ThreadId,
   TurnId,
   type OrchestrationThreadActivity,
@@ -367,18 +368,6 @@ function requestKindFromCanonicalRequestType(
   }
 }
 
-function isToolLifecycleItemType(itemType: string): boolean {
-  return (
-    itemType === "command_execution" ||
-    itemType === "file_change" ||
-    itemType === "mcp_tool_call" ||
-    itemType === "dynamic_tool_call" ||
-    itemType === "collab_agent_tool_call" ||
-    itemType === "web_search" ||
-    itemType === "image_view"
-  );
-}
-
 function runtimeEventToActivities(
   event: ProviderRuntimeEvent,
 ): ReadonlyArray<OrchestrationThreadActivity> {
@@ -643,7 +632,7 @@ function runtimeEventToActivities(
           createdAt: event.createdAt,
           tone: "tool",
           kind: "tool.completed",
-          summary: `${event.payload.title ?? "Tool"} complete`,
+          summary: event.payload.title ?? "Tool",
           payload: {
             itemType: event.payload.itemType,
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),

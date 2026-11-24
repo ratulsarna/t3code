@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Synchronous transactions mirror the Pipeline store.
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
+import * as NodeCrypto from "node:crypto";
+import type * as NodeSqlite from "node:sqlite";
 import {
   PIPELINE_DEFAULT_LIMIT,
   PipelineFailure,
@@ -121,7 +121,7 @@ function publicCard(row: CardRow, waitingReason: string | null, runNext: boolean
   };
 }
 
-export function createCardStore(db: DatabaseSync, now = Date.now) {
+export function createCardStore(db: NodeSqlite.DatabaseSync, now = Date.now) {
   function transaction<T>(work: () => T): T {
     db.exec("BEGIN IMMEDIATE");
     try {
@@ -221,7 +221,7 @@ export function createCardStore(db: DatabaseSync, now = Date.now) {
     db.prepare("INSERT OR IGNORE INTO instruction_snapshots VALUES (?, ?, ?, ?)").run(
       id,
       instructions,
-      randomBytes(32).toString("base64url"),
+      NodeCrypto.randomBytes(32).toString("base64url"),
       origin,
     );
   }
@@ -235,7 +235,7 @@ export function createCardStore(db: DatabaseSync, now = Date.now) {
         run_state: "running",
         queued_at: now(),
         operation,
-        operation_id: operation === "launch" ? card.id : randomUUID(),
+        operation_id: operation === "launch" ? card.id : NodeCrypto.randomUUID(),
         launch_error: null,
         control_error: null,
       },
@@ -245,7 +245,7 @@ export function createCardStore(db: DatabaseSync, now = Date.now) {
   }
 
   function create(input: PipelineNewCard, instructions: string, origin: string) {
-    const id = randomUUID();
+    const id = NodeCrypto.randomUUID();
     const at = now();
     db.prepare(`INSERT INTO cards (id, project_id, host_id, title, body, base_ref, lead_execution,
       mode, size, shape_review, "column", run_state, start_requested, created_at, updated_at)
@@ -308,7 +308,7 @@ export function createCardStore(db: DatabaseSync, now = Date.now) {
         : {
             ...held,
             operation: kind,
-            operation_id: randomUUID(),
+            operation_id: NodeCrypto.randomUUID(),
           },
       kind === "pause" ? "pause_requested" : "stop_requested",
       "user",
@@ -421,7 +421,8 @@ export function createCardStore(db: DatabaseSync, now = Date.now) {
       if (!/^[\w-]{43}$/.test(token)) return false;
       const saved = snapshot(id);
       return (
-        saved !== undefined && timingSafeEqual(Buffer.from(token), Buffer.from(saved.report_token))
+        saved !== undefined &&
+        NodeCrypto.timingSafeEqual(Buffer.from(token), Buffer.from(saved.report_token))
       );
     },
     report(id: string, report: PipelineReport) {

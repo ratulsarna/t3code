@@ -308,7 +308,7 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
           ) : null}
           <SidebarUtilityItem
             icon={<Columns3Icon />}
-            label="Pipeline"
+            label={gt("Pipeline")}
             onClick={() => {
               closeMobileSidebar();
               void navigate({ to: "/pipeline" });

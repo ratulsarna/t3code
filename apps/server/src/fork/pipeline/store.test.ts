@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Use the same SQLite file across store restarts.
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { expect, test } from "vite-plus/test";
 
@@ -33,14 +33,14 @@ const create = (store: ReturnType<typeof createCardStore>, title: string) =>
   )!;
 
 test("a crash keeps an ambiguous launch counted and admits the preferred card only after release", () => {
-  const directory = mkdtempSync(join(tmpdir(), "t3-pipeline-"));
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pipeline-"));
   try {
-    const filename = join(directory, "pipeline.sqlite");
+    const filename = NodePath.join(directory, "pipeline.sqlite");
     let first: string;
     let preferred: string;
     let waiting: string;
     {
-      using db = new DatabaseSync(filename);
+      using db = new NodeSqlite.DatabaseSync(filename);
       const store = createCardStore(db, () => 10);
       store.mutate({ kind: "limit", hostId, projectId, limit: 1 }, "", origin);
       first = create(store, "First");
@@ -50,7 +50,7 @@ test("a crash keeps an ambiguous launch counted and admits the preferred card on
       store.mutate({ kind: "run_next", id: preferred }, "", origin);
       store.mutate({ kind: "stop", id: first }, "", origin);
     }
-    using db = new DatabaseSync(filename);
+    using db = new NodeSqlite.DatabaseSync(filename);
     const store = createCardStore(db);
     store.claim();
     expect(
@@ -65,12 +65,12 @@ test("a crash keeps an ambiguous launch counted and admits the preferred card on
     expect(store.pending().map(({ id }) => id)).toEqual([preferred]);
     expect(store.cards().find(({ id }) => id === waiting)?.waitingReason).toContain("capacity");
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    NodeFS.rmSync(directory, { recursive: true, force: true });
   }
 });
 
 test("a card token cannot authorize another card or acknowledge an obsolete pause", () => {
-  using db = new DatabaseSync(":memory:");
+  using db = new NodeSqlite.DatabaseSync(":memory:");
   const store = createCardStore(db);
   const first = create(store, "First");
   const second = create(store, "Second");

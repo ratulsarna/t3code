@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- The fork ledger is a separate local SQLite database.
-import { DatabaseSync } from "node:sqlite";
+import * as NodeSqlite from "node:sqlite";
 import {
   EnvironmentId,
   ModelSelection,
@@ -21,7 +21,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 import { ServerConfig } from "../../config.ts";
 import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
@@ -31,6 +31,9 @@ import { createCardStore } from "./store.ts";
 
 type CardStore = ReturnType<typeof createCardStore>;
 type PendingCard = ReturnType<CardStore["pending"]>[number];
+
+const decodeModelSelection = Schema.decodeEffect(Schema.fromJsonString(ModelSelection));
+const isPipelineFailure = Schema.is(PipelineFailure);
 
 const message = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 const failed = (message: string) => new PipelineFailure({ message });
@@ -111,7 +114,9 @@ const make = Effect.gen(function* () {
     origin === null
       ? null
       : yield* Effect.acquireRelease(
-          Effect.sync(() => new DatabaseSync(path.join(config.stateDir, "pipeline.sqlite"))),
+          Effect.sync(
+            () => new NodeSqlite.DatabaseSync(path.join(config.stateDir, "pipeline.sqlite")),
+          ),
           (db) => Effect.sync(() => db.close()),
         ).pipe(Effect.map(createCardStore));
 
@@ -145,8 +150,8 @@ const make = Effect.gen(function* () {
       })
       .pipe(Effect.timeout("20 seconds"));
 
-  const reconcile = (db: CardStore, card: PendingCard) =>
-    Effect.gen(function* () {
+  const reconcile = Effect.fn("Pipeline.reconcile")(
+    function* (db: CardStore, card: PendingCard) {
       const hostId = EnvironmentId.make(card.host_id);
       const link = yield* storedLink(hostId);
       const identity = DateTime.formatIso(link.linkedAt);
@@ -173,9 +178,7 @@ const make = Effect.gen(function* () {
         const modelSelection =
           card.lead_execution === null
             ? undefined
-            : yield* Schema.decodeEffect(Schema.fromJsonString(ModelSelection))(
-                card.lead_execution,
-              );
+            : yield* decodeModelSelection(card.lead_execution);
         const outcome = yield* call(
           hostId,
           "t3_thread_launch",
@@ -222,7 +225,7 @@ const make = Effect.gen(function* () {
                 : current.run_state === "pause_requested"
                   ? "pause"
                   : null,
-            operation_id: current.run_state === "running" ? null : randomUUID(),
+            operation_id: current.run_state === "running" ? null : NodeCrypto.randomUUID(),
           }),
           "launched",
         );
@@ -251,7 +254,7 @@ const make = Effect.gen(function* () {
             if (operation === "resume" && current.run_state !== "running") {
               return {
                 operation: current.run_state === "stopping" ? "stop" : "pause",
-                operation_id: randomUUID(),
+                operation_id: NodeCrypto.randomUUID(),
                 control_error: null,
               };
             }
@@ -320,19 +323,24 @@ const make = Effect.gen(function* () {
           );
         }
       }
-    }).pipe(
-      Effect.catch((error) =>
-        Effect.sync(() => {
-          const token = db.snapshot(card.id)?.report_token;
-          const detail = token ? message(error).replaceAll(token, "[credential]") : message(error);
-          db.apply(card.id, (current) =>
-            current.operation === card.operation && current.operation_id === card.operation_id
-              ? { control_error: detail }
-              : undefined,
-          );
-        }),
+    },
+    (effect, db, card) =>
+      effect.pipe(
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            const token = db.snapshot(card.id)?.report_token;
+            const detail = token
+              ? message(error).replaceAll(token, "[credential]")
+              : message(error);
+            db.apply(card.id, (current) =>
+              current.operation === card.operation && current.operation_id === card.operation_id
+                ? { control_error: detail }
+                : undefined,
+            );
+          }),
+        ),
       ),
-    );
+  );
 
   if (store !== null) {
     const tick = Effect.gen(function* () {
@@ -411,8 +419,7 @@ const make = Effect.gen(function* () {
         return yield* failed("Pipeline lead instructions exceed 60,000 characters.");
       const id = yield* Effect.try({
         try: () => db.mutate(action, instructions, origin!),
-        catch: (error) =>
-          Schema.is(PipelineFailure)(error) ? error : failed("Could not save the card."),
+        catch: (error) => (isPipelineFailure(error) ? error : failed("Could not save the card.")),
       });
       return { id };
     }),

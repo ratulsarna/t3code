@@ -24,6 +24,8 @@ import { Pipeline, layer as layerService } from "./service.ts";
 
 export { layerService };
 
+const isPipelineFailure = Schema.is(PipelineFailure);
+
 const requireScope = (scope: AuthEnvironmentScope) =>
   Effect.flatMap(EnvironmentAuthenticatedPrincipal, (principal) =>
     principal.scopes.has(scope)
@@ -83,7 +85,7 @@ export const layerReports = Layer.unwrap(
           return yield* Effect.try({
             try: () => store.report(cardId, payload.success),
             catch: (error) => ({
-              detail: Schema.is(PipelineFailure)(error) ? error.message : null,
+              detail: isPipelineFailure(error) ? error.message : null,
             }),
           }).pipe(
             Effect.map(() => HttpServerResponse.empty({ status: 204 })),

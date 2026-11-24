@@ -2,7 +2,7 @@ import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
 import { executeConnectedEnvironmentHttpRequest } from "@t3tools/client-runtime/state/environmentHttpAuth";
 import { type EnvironmentId, type PipelineMutation } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import { AtomRegistry } from "effect/reactivity";
+import { Atom, AtomRegistry } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
@@ -24,58 +24,60 @@ const recoverConflict = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     ),
   );
 
-function send<A, E, R extends never>(
+function request<A, E, R extends never>(
   environmentId: EnvironmentId,
-  request: PipelineRequest<{ readonly data: A } | { readonly error: string }, E, R>,
-  signal?: AbortSignal,
+  input: PipelineRequest<{ readonly data: A } | { readonly error: string }, E, R>,
 ) {
-  const operation = Effect.flatMap(EnvironmentRegistry.EnvironmentRegistry, (registry) =>
+  return Effect.flatMap(EnvironmentRegistry.EnvironmentRegistry, (registry) =>
     registry.run(
       environmentId,
       executeConnectedEnvironmentHttpRequest({
-        ...request,
+        ...input,
         group: "pipeline",
         timeoutMs: 25_000,
       }),
     ),
-  );
-  return Effect.runPromise(
-    AtomRegistry.getResult(appAtomRegistry, connectionAtomRuntime).pipe(
-      Effect.flatMap((context) => Effect.provide(operation, context)),
+  ).pipe(
+    Effect.flatMap((response) =>
+      "error" in response ? Effect.fail(new Error(response.error)) : Effect.succeed(response.data),
     ),
-    signal ? { signal } : undefined,
-  ).then((response) => {
-    if ("error" in response) throw new Error(response.error);
-    return response.data;
-  });
+  );
 }
 
-export const readBoard = (hub: EnvironmentId, signal: AbortSignal) =>
-  send(
-    hub,
-    {
+export const pipelineBoardAtom = Atom.family((hub: EnvironmentId) =>
+  connectionAtomRuntime.atom(
+    request(hub, {
       method: "GET",
       url: (urls) => urls.board(),
       request: ({ client, headers }) => recoverConflict(client.board({ headers })),
-    },
-    signal,
-  );
+    }),
+  ),
+);
 
-export const readProjects = (hub: EnvironmentId, hostId: EnvironmentId, signal: AbortSignal) =>
-  send(
-    hub,
-    {
+const projectQueries = Atom.family((key: string) => {
+  const [hub, hostId] = JSON.parse(key) as [EnvironmentId, EnvironmentId];
+  return connectionAtomRuntime.atom(
+    request(hub, {
       method: "GET",
       url: (urls) => urls.projects({ query: { hostId } }),
       request: ({ client, headers }) =>
         recoverConflict(client.projects({ headers, query: { hostId } })),
-    },
-    signal,
+    }),
   );
+});
 
-export const mutate = (hub: EnvironmentId, payload: PipelineMutation) =>
-  send(hub, {
+export const pipelineProjectsAtom = (hub: EnvironmentId, hostId: EnvironmentId) =>
+  projectQueries(JSON.stringify([hub, hostId]));
+
+export const mutate = (hub: EnvironmentId, payload: PipelineMutation) => {
+  const operation = request(hub, {
     method: "POST",
     url: (urls) => urls.mutate(),
     request: ({ client, headers }) => recoverConflict(client.mutate({ headers, payload })),
   });
+  return Effect.runPromise(
+    AtomRegistry.getResult(appAtomRegistry, connectionAtomRuntime).pipe(
+      Effect.flatMap((context) => Effect.provide(operation, context)),
+    ),
+  );
+};

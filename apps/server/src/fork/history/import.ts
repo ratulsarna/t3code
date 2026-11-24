@@ -1,16 +1,16 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
-import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import * as NodeReadline from "node:readline";
 
-import { CommandId, type ChatAttachment } from "@t3tools/contracts";
+import { CommandId, ProjectId, type ChatAttachment } from "@t3tools/contracts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
@@ -41,6 +41,14 @@ class HistoryImportError extends Schema.TaggedError<HistoryImportError>()("Histo
 const decodeWorkspaceMap = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
 );
+const decodeThreadWorkspaceMap = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.NullOr(Schema.String))),
+);
+const readMappingFile = (file: string) =>
+  Effect.tryPromise({
+    try: () => NodeFSP.readFile(file, "utf8"),
+    catch: (cause) => new HistoryImportError({ message: "Cannot read workspace mapping", cause }),
+  });
 const decodeLine = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const isUnavailableAttachment = Schema.is(UnavailableAttachmentError);
 const progress = (fields: object) => Console.log(JSON.stringify(fields));
@@ -66,6 +74,7 @@ export const importHistory = Effect.fn("bbHistory.import")(function* (input: {
   readonly file: string;
   readonly attachmentRoot: string;
   readonly workspaceMapFile: string | undefined;
+  readonly threadWorkspaceMapFile?: string | undefined;
 }) {
   const config = yield* ServerConfig.ServerConfig;
   const attachmentRoot = yield* Effect.tryPromise({
@@ -78,42 +87,44 @@ export const importHistory = Effect.fn("bbHistory.import")(function* (input: {
     const projects = yield* ProjectService.ProjectService;
     const store = yield* ProjectionStore.ProjectionStoreV2;
     const sink = yield* EventSink.EventSinkV2;
-    const workspaceMap = input.workspaceMapFile;
+    const fs = yield* FileSystem.FileSystem;
     const workspaceRoots =
-      workspaceMap === undefined
+      input.workspaceMapFile === undefined
         ? {}
-        : yield* Effect.tryPromise({
-            try: () => NodeFSP.readFile(workspaceMap, "utf8"),
-            catch: (cause) =>
-              new HistoryImportError({ message: "Cannot read workspace mapping", cause }),
-          }).pipe(Effect.flatMap(decodeWorkspaceMap));
-    const lines = yield* Effect.acquireRelease(
-      Effect.sync(() =>
-        NodeReadline.createInterface({
-          input: NodeFS.createReadStream(input.file),
-          crlfDelay: Infinity,
-        }),
+        : yield* readMappingFile(input.workspaceMapFile).pipe(Effect.flatMap(decodeWorkspaceMap));
+    const threadWorkspaceRoots =
+      input.threadWorkspaceMapFile === undefined
+        ? {}
+        : yield* readMappingFile(input.threadWorkspaceMapFile).pipe(
+            Effect.flatMap(decodeThreadWorkspaceMap),
+          );
+    // Node readline also splits on U+2028 and U+2029, which are valid inside JSON strings.
+    const lines = fs.stream(input.file).pipe(
+      Stream.decodeText(),
+      Stream.splitLines,
+      Stream.mapError(
+        (cause) => new HistoryImportError({ message: "Cannot read decoded bb history", cause }),
       ),
-      (lines) => Effect.sync(() => lines.close()),
     );
-    const iterator = lines[Symbol.asyncIterator]();
     const openedProjects = new Set<string>();
     let written = 0;
     let skipped = 0;
     let eventCount = 0;
     let attachmentBytes = 0;
     const started = performance.now();
-    for (;;) {
-      const line = yield* Effect.tryPromise({
-        try: () => iterator.next(),
-        catch: (cause) =>
-          new HistoryImportError({ message: "Cannot read decoded bb history", cause }),
-      });
-      if (line.done) break;
-      if (!line.value.trim()) continue;
-      const record = (yield* decodeLine(line.value)) as HistoryRecord;
+    const importLine = Effect.fnUntraced(function* (line: string) {
+      if (!line.trim()) return;
+      const record = (yield* decodeLine(line)) as HistoryRecord;
       const { thread } = record;
       const threadId = bbThreadId(thread.id);
+      const workspaceOverride = Object.hasOwn(threadWorkspaceRoots, thread.id)
+        ? (threadWorkspaceRoots[thread.id] ?? thread.path ?? "").trim()
+        : undefined;
+      if (workspaceOverride !== undefined && !NodePath.isAbsolute(workspaceOverride)) {
+        return yield* new HistoryImportError({
+          message: `Thread ${threadId} requires an absolute workspace path`,
+        });
+      }
       const existing = yield* store.findThread(threadId);
       if (existing) {
         if (existing.historyOrigin !== "bb_import") {
@@ -121,13 +132,35 @@ export const importHistory = Effect.fn("bbHistory.import")(function* (input: {
             message: `Thread ID ${threadId} is already in use`,
           });
         }
+        if (workspaceOverride !== undefined) {
+          const project = yield* projects.getByWorkspaceRoot(workspaceOverride);
+          if (
+            Option.isNone(project) ||
+            project.value.id !== existing.projectId ||
+            existing.worktreePath !== null
+          ) {
+            return yield* new HistoryImportError({
+              message: `Thread ${threadId} already imported with a different workspace`,
+            });
+          }
+        }
         // The thread creation and transcript commit together in EventSink.
         skipped++;
-        continue;
+        return;
       }
 
-      const projectId = bbProjectId(thread.project_id);
-      if (!openedProjects.has(projectId)) {
+      let projectId = bbProjectId(thread.project_id);
+      if (workspaceOverride !== undefined) {
+        const root = NodePath.resolve(workspaceOverride);
+        const digest = NodeCrypto.createHash("sha256").update(root).digest("hex");
+        const { project } = yield* projects.bootstrap({
+          commandId: CommandId.make(`bb-history:create:${NodeCrypto.randomUUID()}`),
+          projectId: ProjectId.make(`bb-workspace-${digest}`),
+          title: NodePath.basename(root) || thread.project_name,
+          workspaceRoot: root,
+        });
+        projectId = project.id;
+      } else if (!openedProjects.has(projectId)) {
         const existingProject = yield* projects.getById(projectId, { includeDeleted: true });
         if (Option.isNone(existingProject)) {
           const workspaceRoot = Object.hasOwn(workspaceRoots, thread.project_id)
@@ -175,6 +208,7 @@ export const importHistory = Effect.fn("bbHistory.import")(function* (input: {
       }
       const events = eventsForThread(
         record,
+        projectId,
         attachments,
         unavailable,
         record.links.importedChildren,
@@ -183,7 +217,8 @@ export const importHistory = Effect.fn("bbHistory.import")(function* (input: {
       eventCount += committed.length;
       written++;
       yield* progress({ threadId, events: committed.length, unavailable: unavailable.size });
-    }
+    });
+    yield* Stream.runForEach(lines, importLine);
     yield* progress({
       written,
       skipped,

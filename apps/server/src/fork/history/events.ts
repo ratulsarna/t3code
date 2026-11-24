@@ -12,11 +12,12 @@ import {
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
+  type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { bbProjectId, bbThreadId } from "./ids.ts";
+import { bbThreadId } from "./ids.ts";
 import type { HistoryRecord, Row, WorkRow } from "./records.ts";
 
 const at = DateTime.makeUnsafe;
@@ -274,6 +275,7 @@ function workPayload(row: WorkRow) {
 
 export function eventsForThread(
   record: HistoryRecord,
+  projectId: ProjectId,
   attachmentMap: ReadonlyMap<string, ChatAttachment>,
   unavailable: ReadonlyMap<string, string>,
   followedChildren: readonly string[],
@@ -287,7 +289,7 @@ export function eventsForThread(
     id,
     createdBy: "system",
     creationSource: "server",
-    projectId: bbProjectId(thread.project_id),
+    projectId,
     title: thread.title?.trim() || thread.title_fallback?.trim() || "Untitled bb thread",
     providerInstanceId: modelSelection.instanceId,
     modelSelection,

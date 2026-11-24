@@ -635,6 +635,10 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   yield* Effect.log(`[cli-archive] Staging ${stem}...`);
   yield* fs.copyFile(builtExecutable, path.join(contentDir, executableName));
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
+  yield* fs.copyFile(
+    path.join(serverDir, "src/fork/agent-tools/run-job.mjs"),
+    path.join(contentDir, "run-job.mjs"),
+  );
   yield* fs.copy(resourceMonitorDir, path.join(contentDir, "resource-monitor"));
   yield* stageRuntimeExternals({
     repoRoot,

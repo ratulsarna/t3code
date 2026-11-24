@@ -3,10 +3,8 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   EventId,
   MessageId,
-  ProjectId,
   ProviderDriverKind,
   RuntimeRequestId,
-  ThreadId,
   TurnItemId,
   defaultInstanceIdForDriver,
   type ChatAttachment,
@@ -17,10 +15,8 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
+import { bbProjectId, bbThreadId } from "./ids.ts";
 import type { HistoryRecord, Row, WorkRow } from "./records.ts";
-
-export const bbThreadId = (id: string) => ThreadId.make(`bb-${id}`);
-export const bbProjectId = (id: string) => ProjectId.make(`bb-${id}`);
 
 const at = DateTime.makeUnsafe;
 const optionalAt = (value: number | null) => (value === null ? null : at(value));

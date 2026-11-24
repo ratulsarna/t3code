@@ -13,6 +13,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { ServerConfig } from "../../config.ts";
 import { ProcessRunner, type ProcessRunOutput } from "../../processRunner.ts";
 import { Scheduler } from "../../scheduling/Scheduler.ts";
+import { runForkMigrations } from "../migrations.ts";
 import { nextRunAt, validateSchedule } from "./Schedule.ts";
 
 const CONFIG_FILE = "script-automations.json";
@@ -75,27 +76,6 @@ const install = Effect.fn("ScriptAutomations.install")(function* (jobs: readonly
   const sql = yield* SqlClient.SqlClient;
   const scheduler = yield* Scheduler;
   const process = yield* ProcessRunner;
-
-  yield* sql`CREATE TABLE IF NOT EXISTS script_schedules (
-      id TEXT PRIMARY KEY,
-      cron TEXT NOT NULL,
-      timezone TEXT NOT NULL,
-      next_run_at INTEGER,
-      failures INTEGER NOT NULL DEFAULT 0
-    )`;
-  yield* sql`CREATE TABLE IF NOT EXISTS script_runs (
-      job_id TEXT NOT NULL REFERENCES script_schedules(id),
-      due_at INTEGER NOT NULL,
-      started_at INTEGER NOT NULL,
-      finished_at INTEGER,
-      status TEXT NOT NULL,
-      output TEXT,
-      exit_code INTEGER,
-      reason TEXT,
-      PRIMARY KEY (job_id, due_at)
-    )`;
-  yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS script_runs_single_flight
-      ON script_runs (job_id) WHERE status = 'running'`;
 
   const bootedAt = yield* Clock.currentTimeMillis;
   const ids = yield* encodeIds(jobs.map(({ id }) => id));
@@ -224,7 +204,9 @@ export const layer = Layer.unwrap(
       });
       ids.add(job.id);
     }
-    return Layer.effectDiscard(install(jobs)).pipe(
+    return Layer.effectDiscard(
+      runForkMigrations.pipe(Effect.andThen(install(jobs))),
+    ).pipe(
       Layer.provide(
         NodeSqliteClient.layer({
           filename: path.join(config.stateDir, "script-automations.sqlite"),

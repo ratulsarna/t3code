@@ -3,7 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeSea from "node:sea";
 import * as NodeSqlite from "node:sqlite";
-import { bbThreadId } from "../history/events.ts";
+import { bbThreadId } from "../history/ids.ts";
 import { atomicWrite, type BotBinding, readBotsConfig, readCursor } from "./config.ts";
 import { spokenDate } from "./history.ts";
 import { Chat, VIEW_HI } from "./tree.ts";

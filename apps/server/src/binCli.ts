@@ -1,5 +1,3 @@
-import { botsCommand } from "./fork/bots/cli.ts";
-import { bbHistoryCommand } from "./fork/history/cli.ts";
 import { doctorCommand } from "./cli/doctor.ts";
 import { policyCommand } from "./cli/policy.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -25,9 +23,9 @@ import { projectCommand } from "./cli/project.ts";
 import { feedbackCommand } from "./cli/feedback.ts";
 import { threadCommand } from "./cli/thread.ts";
 import { workflowCommand } from "./cli/workflow.ts";
-import { voiceCommand } from "./fork/agent-tools/voice.ts";
 import { runDefaultServerCommand, serveCommand, startCommand } from "./cli/server.ts";
 import { updateCommand } from "./cli/update.ts";
+import { forkCommands } from "./fork/cli.ts";
 import {
   confirmCliInstall,
   inTerminalForeground,
@@ -96,7 +94,6 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       browserCommand,
       projectCommand,
       threadCommand,
-      voiceCommand,
       feedbackCommand,
       workflowCommand,
       upCommand,
@@ -112,8 +109,6 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
         Command.withHandler(() => Effect.sync(() => void runServiceLauncherCli())),
       ),
       claudeHistoryCommand,
-      bbHistoryCommand,
-      botsCommand,
       speechWorkerCommand,
       sshHelperCommand,
 
@@ -123,6 +118,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       doctorCommand,
       policyCommand,
       triageCommand,
+      forkCommands,
       cloudEnabled ? connectCommand : connectUnavailableCommand,
     ]),
   );

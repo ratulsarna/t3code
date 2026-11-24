@@ -29,7 +29,8 @@ import * as T3ProjectFileLoader from "../../project/T3ProjectFileLoader.ts";
 import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
 
 import { importAttachment, openAttachmentRoot, UnavailableAttachmentError } from "./attachments.ts";
-import { bbProjectId, bbThreadId, eventsForThread } from "./events.ts";
+import { eventsForThread } from "./events.ts";
+import { bbProjectId, bbThreadId } from "./ids.ts";
 import type { HistoryRecord } from "./records.ts";
 
 class HistoryImportError extends Schema.TaggedError<HistoryImportError>()("HistoryImportError", {

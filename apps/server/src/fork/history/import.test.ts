@@ -11,7 +11,8 @@ import * as ServerConfig from "../../config.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { normalizeAttachmentReferences } from "./attachmentReferences.ts";
-import { bbThreadId, eventsForThread } from "./events.ts";
+import { eventsForThread } from "./events.ts";
+import { bbThreadId } from "./ids.ts";
 import { importHistory } from "./import.ts";
 import type { HistoryRecord, Row } from "./records.ts";
 

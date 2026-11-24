@@ -1,7 +1,11 @@
+import { PipelineFailure } from "@t3tools/contracts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { Argument, Command } from "effect/cli";
+
+const encodeCounts = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const importCommand = Command.make("import-bb", {
   snapshot: Argument.String("bb-snapshot"),
@@ -17,17 +21,20 @@ const importCommand = Command.make("import-bb", {
   Command.withHandler(
     Effect.fn(function* ({ snapshot, target, historyHome, models, resumeTargets, leadSettings }) {
       const { importBbPipeline } = yield* Effect.promise(() => import("./importBb.ts"));
-      const counts = yield* Effect.try(() =>
-        importBbPipeline(
-          snapshot,
-          target,
-          historyHome,
-          models,
-          Option.getOrUndefined(resumeTargets),
-          Option.getOrUndefined(leadSettings),
-        ),
-      );
-      yield* Console.log(JSON.stringify(counts));
+      const counts = yield* Effect.try({
+        try: () =>
+          importBbPipeline(
+            snapshot,
+            target,
+            historyHome,
+            models,
+            Option.getOrUndefined(resumeTargets),
+            Option.getOrUndefined(leadSettings),
+          ),
+        catch: (cause) =>
+          new PipelineFailure({ message: cause instanceof Error ? cause.message : String(cause) }),
+      });
+      yield* Console.log(yield* encodeCounts(counts));
     }),
   ),
 );

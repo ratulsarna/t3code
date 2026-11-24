@@ -12,6 +12,7 @@ import {
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 

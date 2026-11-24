@@ -1,3 +1,4 @@
+import { hasRunlessImportedHistory } from "@t3tools/contracts";
 import type { AgentAwarenessThread } from "../orchestration-v2/ProjectionStore.ts";
 import {
   isListedThreadLineage,
@@ -85,7 +86,7 @@ function shouldPublishAgentAwarenessEvent(
     typeof event.payload === "object" &&
     event.payload !== null &&
     "historyOrigin" in event.payload &&
-    event.payload.historyOrigin === "v1_import"
+    hasRunlessImportedHistory(event.payload.historyOrigin)
   ) {
     return false;
   }

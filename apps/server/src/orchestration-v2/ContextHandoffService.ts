@@ -1,3 +1,4 @@
+import { hasRunlessImportedHistory } from "@t3tools/contracts";
 import {
   type OrchestrationV2AppThread,
   OrchestrationV2ContextHandoff,
@@ -147,7 +148,7 @@ export function visibleConversationItems(
 
 type ForkHistorySource = Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "attempts">;
 
-/** Visible rows of `source`'s own runs through `throughRun`, plus its v1 imported rows. */
+/** Visible rows of `source`'s own runs through `throughRun`, plus its run-less imported rows. */
 const readOwnHistoryItems = Effect.fn("orchestrationV2.contextHandoff.readOwnHistoryItems")(
   function* (
     projectionStore: Pick<ProjectionStoreV2Shape, "getThreadRecords">,
@@ -157,7 +158,7 @@ const readOwnHistoryItems = Effect.fn("orchestrationV2.contextHandoff.readOwnHis
     const { turnItems } = yield* projectionStore.getThreadRecords(source.thread.id, ["turnItems"], {
       turnItemRunIds: [
         ...source.runs.filter((run) => run.ordinal <= throughRun.ordinal).map((run) => run.id),
-        ...(source.thread.historyOrigin === "v1_import" ? [null] : []),
+        ...(hasRunlessImportedHistory(source.thread.historyOrigin) ? [null] : []),
       ],
     });
     return visibleConversationItems(source, turnItems);
@@ -298,7 +299,7 @@ function makeLegacyImportSummary(items: ReadonlyArray<OrchestrationV2TurnItem>):
     }
   });
   const header =
-    "Imported conversation history from the previous T3 Code orchestrator. Use it as context; do not repeat it unless the user asks.";
+    "Imported conversation history. Use it as context; do not repeat it unless the user asks.";
   const maxChars = 32_000;
   const selected: Array<string> = [];
   let remaining = maxChars - header.length - 2;

@@ -1,3 +1,4 @@
+import { hasRunlessImportedHistory } from "@t3tools/contracts";
 import type {
   OrchestrationV2ThreadLinkMetadata,
   GuestShareId,
@@ -1474,7 +1475,7 @@ export function shouldPrepareLegacyImportHandoff(input: {
   readonly legacyImportItemCount: number;
 }): boolean {
   return (
-    input.historyOrigin === "v1_import" &&
+    hasRunlessImportedHistory(input.historyOrigin) &&
     !input.hasNativeHistory &&
     !input.hasCompletedRun &&
     input.legacyImportItemCount > 0
@@ -1932,6 +1933,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         Effect.map((records) => records.turnItems),
         Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })),
       );
+
+  const readImportedHandoffItems = (thread: OrchestrationV2AppThread) =>
+    readHandoffItems(thread.id, [null]).pipe(
+      Effect.map((items) =>
+        thread.historyOrigin === "bb_import"
+          ? items.slice(
+              items.findLastIndex(
+                (item) => item.type === "system_notice" && item.title === "bb context cleared",
+              ) + 1,
+            )
+          : items,
+      ),
+    );
 
   const readInheritedItems = (thread: OrchestrationV2AppThread) =>
     readInheritedHandoffItems(projectionStore, thread).pipe(
@@ -2933,8 +2947,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             );
       const needsFullContext = deliveryProviderThread.nativeThreadRef === null;
       const legacyImportItems =
-        projection.thread.historyOrigin === "v1_import" && contextBoundary === 0
-          ? yield* readHandoffItems(threadId, [null])
+        hasRunlessImportedHistory(projection.thread.historyOrigin) && contextBoundary === 0
+          ? yield* readImportedHandoffItems(projection.thread)
           : [];
       const handoffStrategy = needsFullContext
         ? ("full_thread_summary" as const)
@@ -8550,8 +8564,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const latestCompletedRun = projection.runs.findLast((run) => run.status === "completed");
     const latestHandoffRun = projection.runs.findLast(isHandoffSourceRun);
     const legacyImportItems =
-      projection.thread.historyOrigin === "v1_import" && contextBoundary === 0
-        ? yield* readHandoffItems(command.threadId, [null])
+      hasRunlessImportedHistory(projection.thread.historyOrigin) && contextBoundary === 0
+        ? yield* readImportedHandoffItems(projection.thread)
         : [];
     const isProviderSwitch =
       activeProviderThread !== undefined &&
@@ -9228,7 +9242,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const sideChatParentRunIds = [
       // Queued messages have not reached the main thread yet.
       ...sourceRunsAfterFork.filter((run) => run.status !== "queued").map((run) => run.id),
-      ...(sourceRun === null && sourceProjection?.thread.historyOrigin === "v1_import"
+      ...(sourceRun === null && hasRunlessImportedHistory(sourceProjection?.thread.historyOrigin)
         ? [null]
         : []),
     ];

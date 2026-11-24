@@ -1,3 +1,4 @@
+import { hasRunlessImportedHistory } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { isAttachmentOnlyBootstrapPrompt } from "@t3tools/shared/composerContextReferences";
 import {
@@ -117,7 +118,7 @@ const make = Effect.gen(function* () {
       if (forkOrdinal === undefined) return undefined;
       const messages = source.messages.filter((message) => {
         if (message.streaming) return false;
-        if (message.runId === null) return source.thread.historyOrigin === "v1_import";
+        if (message.runId === null) return hasRunlessImportedHistory(source.thread.historyOrigin);
         return (ordinals.get(message.runId) ?? Infinity) <= forkOrdinal;
       });
       return { thread: source.thread, messages };

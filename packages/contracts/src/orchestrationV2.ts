@@ -108,8 +108,15 @@ export const OrchestrationV2CreationSource = Schema.Literals([
 ]);
 export type OrchestrationV2CreationSource = typeof OrchestrationV2CreationSource.Type;
 
-export const OrchestrationV2ThreadHistoryOrigin = Schema.Literals(["native", "v1_import"]);
+export const OrchestrationV2ThreadHistoryOrigin = Schema.Literals([
+  "native",
+  "v1_import",
+  "bb_import",
+]);
 export type OrchestrationV2ThreadHistoryOrigin = typeof OrchestrationV2ThreadHistoryOrigin.Type;
+
+export const hasRunlessImportedHistory = (origin: unknown): boolean =>
+  origin === "v1_import" || origin === "bb_import";
 
 const OrchestrationV2CreationFields = {
   createdBy: OrchestrationV2Actor,

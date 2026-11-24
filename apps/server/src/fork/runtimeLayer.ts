@@ -1,6 +1,6 @@
 import * as Layer from "effect/Layer";
 
-import { Scheduler } from "../scheduling/Scheduler.ts";
+import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ScriptAutomations from "./automations/ScriptAutomations.ts";
 import { botMemoryLayer } from "./bots/service.ts";
 export { layer as apiHandlers, layerReports as routes } from "./pipeline/http.ts";

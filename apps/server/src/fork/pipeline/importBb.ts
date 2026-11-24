@@ -9,7 +9,8 @@ import { initialGithubState, githubStatusSchema } from "./github-types.ts";
 import { z, type Infer } from "./zod.ts";
 import { ModelSelection } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { bbSourceThreadId } from "../history/ids.ts";
+import { bbProjectId, bbSourceThreadId } from "../history/ids.ts";
+import { withForkTransaction } from "../migrations.ts";
 import { createCardStore } from "./store.ts";
 
 const cardIdFor = (source: string) => {
@@ -209,8 +210,7 @@ export function importBbPipeline(
     skipped: 0,
   };
 
-  target.exec("BEGIN IMMEDIATE");
-  try {
+  return withForkTransaction(target, () => {
     target.prepare("INSERT OR IGNORE INTO reviewer_models VALUES (1, ?)").run(models);
     if (defaults)
       target.prepare("INSERT OR IGNORE INTO pipeline_settings VALUES (1, ?)").run(
@@ -250,7 +250,7 @@ export function importBbPipeline(
         VALUES (?, ?, ?, ?, ?, 'HEAD', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`)
         .run(
           id,
-          historyPrefix + row.project_id,
+          bbProjectId(String(row.project_id)),
           map.environmentId,
           String(row.title),
           String(row.body ?? ""),
@@ -335,12 +335,8 @@ export function importBbPipeline(
       counts.done += Number(done);
       counts.leadLinks += Number(leadId !== null);
     }
-    target.exec("COMMIT");
     return counts;
-  } catch (error) {
-    target.exec("ROLLBACK");
-    throw error;
-  }
+  });
 }
 
 if (import.meta.main) {

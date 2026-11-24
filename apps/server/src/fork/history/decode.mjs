@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import * as NodeEvents from "node:events";
 import * as NodeFS from "node:fs";
+import { normalizeAttachmentReferences } from "./attachmentReferences.ts";
 
 const [checkout, snapshot, selection] = process.argv.slice(2);
 if (!checkout || !snapshot || !selection) {
@@ -17,7 +18,7 @@ const bbDbRequire = NodeModule.createRequire(
   NodePath.resolve(checkout, "packages/db/package.json"),
 );
 const [
-  { parseStoredThreadEvent, threadScope, turnScope },
+  { parseStoredThreadEvent, projectAttachmentPaths, threadScope, turnScope },
   { hydrateRetainedEventOutputRows },
   { drizzle },
   {
@@ -31,6 +32,9 @@ const [
   import(NodeURL.pathToFileURL(bbDbRequire.resolve("drizzle-orm/bun-sqlite")).href),
   fromBb("packages/thread-view/src/index.ts"),
 ]);
+
+const uploadedPaths = (path) =>
+  projectAttachmentPaths([{ type: "localFile", path }], "best-effort");
 
 const started = performance.now();
 const benchmark = selection === "--benchmark";
@@ -165,8 +169,11 @@ for (const thread of threads) {
       workspaceRoot: thread.path,
     },
   });
-  const items = flatten(rows).sort((a, b) => a.sourceSeqStart - b.sourceSeqStart);
   const attachments = attachmentQuery.all(thread.id);
+  const inventory = new Set(attachments.map((attachment) => attachment.stored_path));
+  const items = flatten(rows)
+    .sort((a, b) => a.sourceSeqStart - b.sourceSeqStart)
+    .map((row) => normalizeAttachmentReferences(row, uploadedPaths, inventory));
   const root = forkRoot(thread);
   const record = {
     thread,

@@ -30,11 +30,29 @@ export class UnavailableAttachmentError extends Schema.TaggedError<UnavailableAt
   { message: Schema.String },
 ) {}
 
-async function readSource(rootPath: string, source: Attachment): Promise<Buffer> {
-  const root = await NodeFSP.realpath(rootPath);
+export async function openAttachmentRoot(path: string): Promise<string> {
+  const root = await NodeFSP.realpath(path);
+  if (!(await NodeFSP.stat(root)).isDirectory()) {
+    throw new Error("bb attachment root is not a directory");
+  }
+  return root;
+}
+
+async function readSource(root: string, source: Attachment): Promise<Buffer> {
   const project = await NodeFSP.realpath(NodePath.resolve(root, source.project_id));
-  const path = await NodeFSP.realpath(NodePath.resolve(project, source.stored_path));
-  if (!inside(root, project) || !inside(project, path)) {
+  if (!inside(root, project) || !(await NodeFSP.stat(project)).isDirectory()) {
+    throw new Error("Invalid bb project attachment directory");
+  }
+  const requested = NodePath.resolve(project, source.stored_path);
+  if (!inside(project, requested)) {
+    throw new Error("Path is outside the bb project attachment store");
+  }
+  const path = await NodeFSP.realpath(requested).catch(async (cause: unknown) => {
+    if (!(cause instanceof Error && "code" in cause && cause.code === "ENOENT")) throw cause;
+    if (!(await NodeFSP.stat(project)).isDirectory()) throw cause;
+    throw new UnavailableAttachmentError({ message: cause.message });
+  });
+  if (!inside(project, path)) {
     throw new Error("Path is outside the bb project attachment store");
   }
   const info = await NodeFSP.stat(path);
@@ -54,11 +72,7 @@ export async function importAttachment(
   const name = source.original_name.trim();
   const mimeType = source.mime_type?.trim() || "application/octet-stream";
   const type = mimeType.startsWith("image/") ? "image" : "file";
-  const data = await readSource(sourceRoot, source).catch((cause: unknown) => {
-    throw new UnavailableAttachmentError({
-      message: cause instanceof Error ? cause.message : String(cause),
-    });
-  });
+  const data = await readSource(sourceRoot, source);
   const digest = NodeCrypto.createHash("sha256").update(data).digest("hex");
   const stableId = createDeterministicAttachmentId(
     threadId,

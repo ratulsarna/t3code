@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -27,7 +28,7 @@ import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityRes
 import * as T3ProjectFileLoader from "../../project/T3ProjectFileLoader.ts";
 import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
 
-import { importAttachment, UnavailableAttachmentError } from "./attachments.ts";
+import { importAttachment, openAttachmentRoot, UnavailableAttachmentError } from "./attachments.ts";
 import { bbProjectId, bbThreadId, eventsForThread } from "./events.ts";
 import type { HistoryRecord } from "./records.ts";
 
@@ -66,6 +67,10 @@ export const importHistory = Effect.fn("bbHistory.import")(function* (input: {
   readonly workspaceMapFile: string | undefined;
 }) {
   const config = yield* ServerConfig.ServerConfig;
+  const attachmentRoot = yield* Effect.tryPromise({
+    try: () => openAttachmentRoot(input.attachmentRoot),
+    catch: (cause) => new HistoryImportError({ message: "Cannot open bb attachment root", cause }),
+  });
   yield* ServerOwnership.holdServerOwnershipLock(config.serverRuntimeStatePath);
 
   const work = Effect.gen(function* () {
@@ -128,7 +133,7 @@ export const importHistory = Effect.fn("bbHistory.import")(function* (input: {
             ? workspaceRoots[thread.project_id]!
             : NodePath.join(config.baseDir, "history-projects", projectId);
           yield* projects.create({
-            commandId: CommandId.make(`bb-history:create:${projectId}`),
+            commandId: CommandId.make(`bb-history:create:${NodeCrypto.randomUUID()}`),
             projectId,
             title: thread.project_name.trim() || "bb project",
             workspaceRoot,
@@ -145,8 +150,7 @@ export const importHistory = Effect.fn("bbHistory.import")(function* (input: {
       for (const source of record.attachments) {
         const copied = yield* Effect.result(
           Effect.tryPromise({
-            try: () =>
-              importAttachment(input.attachmentRoot, config.attachmentsDir, threadId, source),
+            try: () => importAttachment(attachmentRoot, config.attachmentsDir, threadId, source),
             catch: (cause) =>
               new HistoryImportError({ message: "Cannot stage bb attachment", cause }),
           }),

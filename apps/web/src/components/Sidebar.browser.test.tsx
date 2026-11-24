@@ -64,7 +64,8 @@ vi.mock("../commandPaletteBus", () => ({
   openCommandPalette: vi.fn(),
   isCommandPaletteOpen: () => false,
 }));
-vi.mock("./sidebar/SidebarChrome", () => ({
+vi.mock(import("./sidebar/SidebarChrome"), async (original) => ({
+  ...(await original()),
   SidebarChromeHeader: () => null,
   SidebarChromeFooter: () => null,
 }));

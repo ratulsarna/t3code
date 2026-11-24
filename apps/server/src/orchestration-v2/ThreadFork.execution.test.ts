@@ -778,8 +778,11 @@ const writeParentRun = (input: {
     });
   });
 
-/** Marks `threadId` as imported from V1 and gives it one runless imported user message. */
-const writeImportedHistory = (threadId: ThreadId, text: string) =>
+const writeImportedHistory = (
+  threadId: ThreadId,
+  text: string,
+  historyOrigin: "v1_import" | "bb_import" = "v1_import",
+) =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const eventSink = yield* EventSink.EventSinkV2;
@@ -792,7 +795,7 @@ const writeImportedHistory = (threadId: ThreadId, text: string) =>
           type: "thread.metadata-updated",
           threadId,
           occurredAt: now,
-          payload: { ...thread, historyOrigin: "v1_import" },
+          payload: { ...thread, historyOrigin },
         },
         {
           id: EventId.make(`${threadId}:imported-item`),
@@ -1995,4 +1998,99 @@ it.effect("a native fork that fails before its last attempt still forks natively
     assert.equal(projection.contextTransfers[0]?.status, "consumed");
     assert.equal(projection.contextTransfers[0]?.resolution?.strategy, "native_fork");
   }),
+);
+
+it.effect.each(["immediate", "queued"] as const)(
+  "a same-provider follow-up on a bb import does not read runless history (%s)",
+  (delivery) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("imported-follow-up");
+      yield* createParent(threadId);
+      yield* writeImportedHistory(threadId, "Earlier prompt", "bb_import");
+      yield* writeParentRun({
+        threadId,
+        runId: RunId.make("imported-follow-up-first-run"),
+        ordinal: 1,
+        status: "completed",
+        text: "Completed native turn",
+        stable: true,
+      });
+      const { thread, providerThreads } = yield* orchestrator.getThreadProjection(threadId);
+      yield* (yield* EventSink.EventSinkV2).write({
+        events: [
+          {
+            type: "thread.metadata-updated",
+            id: EventId.make("imported-follow-up-native-binding"),
+            threadId,
+            occurredAt: yield* DateTime.now,
+            payload: { ...thread, activeProviderThreadId: providerThreads[0]!.id },
+          },
+        ],
+      });
+
+      const reads: Array<string> = [];
+      const recordReads: Statement.Transformer = (statement) => {
+        const [query, params] = statement.compile();
+        if (
+          query.includes("FROM orchestration_v2_projection_turn_items") &&
+          query.includes("OR (? = 1 AND run_id IS NULL)") &&
+          params.includes("[]")
+        ) {
+          reads.push(query);
+        }
+        return Effect.succeed(statement);
+      };
+      const watchReads = Effect.provideService(Statement.CurrentTransformer, recordReads);
+      if (delivery === "immediate") {
+        yield* askSideChat(threadId, "imported-native-follow-up").pipe(watchReads);
+      } else {
+        yield* askSideChat(threadId, "imported-active-follow-up");
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("imported-queued-send"),
+          threadId,
+          messageId: MessageId.make("imported-queued-send"),
+          text: "Queued next message",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const { runs } = yield* orchestrator.getThreadProjection(threadId);
+        const active = runs.find((run) => run.ordinal === 2)!;
+        const queued = runs.find((run) => run.ordinal === 3)!;
+        const now = yield* DateTime.now;
+        yield* (yield* EventSink.EventSinkV2).write({
+          events: [
+            {
+              id: EventId.make("imported-queued-follow-up-held"),
+              type: "run.updated",
+              threadId,
+              runId: queued.id,
+              occurredAt: now,
+              payload: { ...queued, queueHeld: true },
+            },
+            {
+              id: EventId.make("imported-active-follow-up-completed"),
+              type: "run.updated",
+              threadId,
+              runId: active.id,
+              occurredAt: now,
+              payload: { ...active, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        yield* orchestrator
+          .dispatch({
+            type: "queue.resume",
+            commandId: CommandId.make("imported-follow-up-resume"),
+            threadId,
+          })
+          .pipe(watchReads);
+        const resumed = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(resumed.runs.find((run) => run.ordinal === 3)?.status, "starting");
+      }
+      assert.isEmpty(reads);
+    }).pipe(Effect.provide(forkCases[0]!.layer)),
 );

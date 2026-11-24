@@ -7,14 +7,12 @@ it("reissues imported context until a V2 run completes", () => {
     shouldPrepareLegacyImportHandoff({
       historyOrigin: "v1_import",
       hasCompletedRun: false,
-      legacyImportItemCount: 2,
     }),
   );
   assert.isFalse(
     shouldPrepareLegacyImportHandoff({
       historyOrigin: "v1_import",
       hasCompletedRun: false,
-      legacyImportItemCount: 2,
       hasNativeHistory: true,
     }),
   );
@@ -22,21 +20,12 @@ it("reissues imported context until a V2 run completes", () => {
     shouldPrepareLegacyImportHandoff({
       historyOrigin: "v1_import",
       hasCompletedRun: true,
-      legacyImportItemCount: 2,
     }),
   );
   assert.isFalse(
     shouldPrepareLegacyImportHandoff({
       historyOrigin: undefined,
       hasCompletedRun: false,
-      legacyImportItemCount: 2,
-    }),
-  );
-  assert.isFalse(
-    shouldPrepareLegacyImportHandoff({
-      historyOrigin: "v1_import",
-      hasCompletedRun: false,
-      legacyImportItemCount: 0,
     }),
   );
 });

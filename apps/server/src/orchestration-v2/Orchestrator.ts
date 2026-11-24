@@ -1472,13 +1472,11 @@ export function shouldPrepareLegacyImportHandoff(input: {
   readonly hasNativeHistory?: boolean;
   readonly hasCompletedRun: boolean;
   readonly historyOrigin: OrchestrationV2AppThread["historyOrigin"];
-  readonly legacyImportItemCount: number;
 }): boolean {
   return (
     hasRunlessImportedHistory(input.historyOrigin) &&
     !input.hasNativeHistory &&
-    !input.hasCompletedRun &&
-    input.legacyImportItemCount > 0
+    !input.hasCompletedRun
   );
 }
 
@@ -1922,30 +1920,55 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })),
           );
 
-  const readHandoffItems = (threadId: ThreadId, runIds?: ReadonlyArray<RunId | null>) =>
+  const readHandoffItems = (
+    threadId: ThreadId,
+    runIds?: ReadonlyArray<RunId | null>,
+    types?: ReadonlyArray<OrchestrationV2TurnItem["type"]>,
+  ) =>
     projectionStore
       .getThreadRecords(
         threadId,
         ["turnItems"],
-        runIds === undefined ? undefined : { turnItemRunIds: runIds },
+        runIds === undefined
+          ? undefined
+          : { turnItemRunIds: runIds, ...(types === undefined ? {} : { turnItemTypes: types }) },
       )
       .pipe(
         Effect.map((records) => records.turnItems),
         Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })),
       );
 
-  const readImportedHandoffItems = (thread: OrchestrationV2AppThread) =>
-    readHandoffItems(thread.id, [null]).pipe(
+  const readImportedHandoffItems = (thread: OrchestrationV2AppThread, contextBoundary: number) => {
+    if (contextBoundary !== 0 || !hasRunlessImportedHistory(thread.historyOrigin)) {
+      return Effect.succeed([]);
+    }
+    if (thread.historyOrigin !== "bb_import") {
+      return readHandoffItems(thread.id, [null]);
+    }
+    // Include the types rendered by historicalMessage and the imported boundary notice.
+    return readHandoffItems(
+      thread.id,
+      [null],
+      [
+        "user_message",
+        "assistant_message",
+        "command_execution",
+        "error",
+        "run_interrupt_result",
+        "file_change",
+        "proposed_plan",
+        "system_notice",
+      ],
+    ).pipe(
       Effect.map((items) =>
-        thread.historyOrigin === "bb_import"
-          ? items.slice(
-              items.findLastIndex(
-                (item) => item.type === "system_notice" && item.title === "bb context cleared",
-              ) + 1,
-            )
-          : items,
+        items.slice(
+          items.findLastIndex(
+            (item) => item.type === "system_notice" && item.title === "bb context cleared",
+          ) + 1,
+        ),
       ),
     );
+  };
 
   const readInheritedItems = (thread: OrchestrationV2AppThread) =>
     readInheritedHandoffItems(projectionStore, thread).pipe(
@@ -2946,10 +2969,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 run.ordinal <= latestHandoffRun.ordinal,
             );
       const needsFullContext = deliveryProviderThread.nativeThreadRef === null;
-      const legacyImportItems =
-        hasRunlessImportedHistory(projection.thread.historyOrigin) && contextBoundary === 0
-          ? yield* readImportedHandoffItems(projection.thread)
-          : [];
+      const readLegacyImportItems = readImportedHandoffItems(projection.thread, contextBoundary);
       const handoffStrategy = needsFullContext
         ? ("full_thread_summary" as const)
         : ("delta_since_target_last_seen" as const);
@@ -3010,7 +3030,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     ? yield* readInheritedItems(projection.thread)
                     : []),
                   ...(needsFullContext && latestCompletedRun !== undefined
-                    ? legacyImportItems
+                    ? yield* readLegacyImportItems
                     : []),
                   ...(yield* readHandoffItems(
                     threadId,
@@ -3029,8 +3049,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     }),
                 ),
               );
+      const legacyImportItems =
+        latestCompletedRun === undefined && needsFullContext ? yield* readLegacyImportItems : [];
       const legacyImportRecoveryHandoff =
-        latestCompletedRun === undefined && needsFullContext && legacyImportItems.length > 0
+        legacyImportItems.length > 0
           ? yield* contextHandoffService
               .prepareLegacyImport({
                 threadId,
@@ -8563,10 +8585,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const contextBoundary = freshContext ? ordinal : contextBoundaryOrdinal(projection);
     const latestCompletedRun = projection.runs.findLast((run) => run.status === "completed");
     const latestHandoffRun = projection.runs.findLast(isHandoffSourceRun);
-    const legacyImportItems =
-      hasRunlessImportedHistory(projection.thread.historyOrigin) && contextBoundary === 0
-        ? yield* readImportedHandoffItems(projection.thread)
-        : [];
+    const readLegacyImportItems = readImportedHandoffItems(projection.thread, contextBoundary);
     const isProviderSwitch =
       activeProviderThread !== undefined &&
       activeProviderThread.providerInstanceId !== modelSelection.instanceId;
@@ -8650,24 +8669,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           driver: adapter.driver,
           nativeThreadId: `pending:${runId}`,
         });
-      const legacyImportHandoff = shouldPrepareLegacyImportHandoff({
+      const legacyImportItems = shouldPrepareLegacyImportHandoff({
         hasNativeHistory:
           activeProviderThread !== undefined && activeProviderThread.nativeThreadRef !== null,
         historyOrigin: projection.thread.historyOrigin,
         hasCompletedRun: latestCompletedRun !== undefined,
-        legacyImportItemCount: legacyImportItems.length,
       })
-        ? yield* contextHandoffService
-            .prepareLegacyImport({
-              threadId: command.threadId,
-              targetRunId: runId,
-              toProviderThreadId: providerThreadId,
-              toProviderInstanceId: modelSelection.instanceId,
-              items: legacyImportItems,
-              createdAt: now,
-            })
-            .pipe(mapDispatchError(command))
-        : null;
+        ? yield* readLegacyImportItems
+        : [];
+      const legacyImportHandoff =
+        legacyImportItems.length > 0
+          ? yield* contextHandoffService
+              .prepareLegacyImport({
+                threadId: command.threadId,
+                targetRunId: runId,
+                toProviderThreadId: providerThreadId,
+                toProviderInstanceId: modelSelection.instanceId,
+                items: legacyImportItems,
+                createdAt: now,
+              })
+              .pipe(mapDispatchError(command))
+          : null;
       const providerThread: OrchestrationV2ProviderThread =
         reusableProviderThread === undefined
           ? {
@@ -9306,7 +9328,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ? yield* readInheritedItems(projection.thread)
               : []),
             ...(latestCompletedRun !== undefined && providerSwitchNeedsFullContext
-              ? legacyImportItems
+              ? yield* readLegacyImportItems
               : []),
             ...(yield* readHandoffItems(
               command.threadId,
@@ -9373,11 +9395,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   }),
               ),
             );
-    const legacyImportRecoveryHandoff =
+    const legacyImportItems =
       isProviderSwitch &&
       !canResumeAcrossInstances &&
       ensuredProviderThread.nativeThreadRef === null &&
-      latestCompletedRun === undefined &&
+      latestCompletedRun === undefined
+        ? yield* readLegacyImportItems
+        : [];
+    const legacyImportRecoveryHandoff =
       legacyImportItems.length > 0
         ? yield* contextHandoffService
             .prepareLegacyImport({

@@ -1,3 +1,4 @@
+import { bbHistoryCommand } from "./fork/history/cli.ts";
 import { doctorCommand } from "./cli/doctor.ts";
 import { policyCommand } from "./cli/policy.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -108,6 +109,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
         Command.withHandler(() => Effect.sync(() => void runServiceLauncherCli())),
       ),
       claudeHistoryCommand,
+      bbHistoryCommand,
       speechWorkerCommand,
       sshHelperCommand,
 

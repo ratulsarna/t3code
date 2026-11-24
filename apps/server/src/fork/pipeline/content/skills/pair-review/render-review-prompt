@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ $# -lt 1 || $# -gt 3 || ( $# -eq 3 && "$2" != "--settled" ) ]]; then
+  echo "usage: render-review-prompt '<diff scope>' [<out-of-scope file> | --settled <settled file>]" >&2
+  exit 2
+fi
+if [[ $# -eq 2 && ! -s "$2" ]]; then
+  echo "render-review-prompt: out-of-scope file $2 is missing or empty" >&2
+  exit 1
+fi
+if [[ $# -eq 3 && ! -s "$3" ]]; then
+  echo "render-review-prompt: settled file $3 is missing or empty" >&2
+  exit 1
+fi
+cat "$dir/review-prompt.txt"
+if [[ $# -eq 2 ]]; then
+  printf '\nOut of scope, each tracked in its own issue. Report one only if this diff makes it worse:\n'
+  cat "$2"
+elif [[ $# -eq 3 ]] && [[ ! "$(cat "$3")" =~ ^[[:space:]]*none[[:space:]]*$ ]]; then
+  printf '\n'
+  cat "$dir/settled-prompt.txt"
+  printf '\n'
+  cat "$3"
+fi
+printf '\nDiff scope: %s\n' "$1"

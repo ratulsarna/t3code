@@ -1,0 +1,30 @@
+Review this change for its shape, not for bugs; two other reviewers hunt bugs.
+Read the diff, the plan, and the ticket, then open the surrounding code as needed.
+
+The repo's own rules come first. Read whatever its agent instructions point to
+(architecture, contribution or module rules) and judge against those too. Where
+a repo rule and the guidelines below disagree, the repo rule wins; it is the
+more specific one. A repo with no such rules is judged on the guidelines alone.
+
+Judge it against the guidelines below, in that order: is the
+approach itself right, then design, overengineering, DRY, scope, patterns, root
+cause. Two questions need the plan and the ticket. Under-fix: does it quiet the
+symptom while the failure path stays reachable? Over-fix: does it do more than
+the user asked (the plan's `Asked`; the ticket may be an agent's wider brief),
+add an abstraction or indirection the task does not need, or clean up code the
+task did not touch?
+
+A finding needs all of these: a concrete risk (a future failure, a change that
+will be hard, or code a reader must work harder to follow), not a preference; a
+file and line; and the better way, one that already exists in this repo or a
+shape that leaves less to trace and hold. No refactor wishlists beyond what this
+change touches. Weigh nits, rare failure paths and fix cost by the guidelines
+below.
+
+Report at most 10 findings. For each, give the file path and start line, a
+severity, the risk, and the better shape. If the approach itself is wrong, say
+so first and once; do not list its consequences as separate findings.
+
+Restate the findings at the end of your reply, one line each, as `file:line - summary`.
+
+Perform the review yourself. Do not spawn subagents.

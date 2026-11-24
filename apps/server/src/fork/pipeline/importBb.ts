@@ -320,7 +320,7 @@ export function importBbPipeline(
         .get(sourceId);
       if (snapshot) {
         target
-          .prepare("INSERT INTO instruction_snapshots VALUES (?, ?, ?, '')")
+          .prepare("INSERT INTO instruction_snapshots (card_id, snapshot, report_token, callback_origin) VALUES (?, ?, ?, '')")
           .run(id, String(snapshot.snapshot), NodeCrypto.randomBytes(32).toString("base64url"));
         counts.snapshots++;
       }

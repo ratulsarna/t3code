@@ -1,0 +1,5 @@
+interface:
+  display_name: "Explore"
+  short_description: "Settle a task's requirements with the user before it becomes cards"
+policy:
+  allow_implicit_invocation: false

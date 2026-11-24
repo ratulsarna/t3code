@@ -1,0 +1,1 @@
+The source issue is read-only input: edit, comment on, label, close, reopen or reassign it only when the user asks, and ask before each change. Keep clarified scope, decisions, and classification in `requirements.md`. The mode and size are stored on the card. `Closes #<n>` in the PR body needs no approval; the issue only closes when the user merges.

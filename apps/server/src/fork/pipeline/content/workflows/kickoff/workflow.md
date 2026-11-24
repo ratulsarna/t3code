@@ -1,0 +1,2 @@
+This task follows the Pipeline workflow. Read its instructions with `t3 pipeline instructions <phase>` and its templates with `t3 pipeline instructions <phase> --file <relative-path>`. Load each phase when you reach it and follow its exit instructions. The lead continues between phases in its own thread, after the user's approval where the card's mode asks for one. Keep every user-approval gate in those instructions that the card's mode calls for.
+{{user_handoff}}

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Emit the comment review prompt for a diff scope, with the guidelines that hold
+# the comment rule. In Pipeline the guidelines file is the run's guidelines.md.
+# Usage: render-comment-prompt '<diff scope>' <guidelines path>
+set -euo pipefail
+dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ $# -ne 2 ]]; then
+  echo "usage: render-comment-prompt '<diff scope>' <guidelines path>" >&2
+  exit 2
+fi
+if [[ ! -s "$2" ]]; then
+  echo "render-comment-prompt: guidelines file $2 is missing or empty" >&2
+  exit 1
+fi
+cat "$dir/comment-review-prompt.txt"
+printf '\n# Guidelines\n\n'
+cat "$2"
+printf '\nDiff scope: %s\n' "$1"

@@ -256,7 +256,7 @@ export function createCardStore(db: NodeSqlite.DatabaseSync, now = Date.now) {
       .prepare("SELECT * FROM instruction_snapshots WHERE card_id = ?")
       .get(id) as unknown as Snapshot;
   function pinInstructions(id: string, instructions: string, origin: string) {
-    db.prepare("INSERT OR IGNORE INTO instruction_snapshots VALUES (?, ?, ?, ?)").run(
+    db.prepare("INSERT OR IGNORE INTO instruction_snapshots (card_id, snapshot, report_token, callback_origin) VALUES (?, ?, ?, ?)").run(
       id,
       instructions,
       NodeCrypto.randomBytes(32).toString("base64url"),

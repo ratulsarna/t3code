@@ -1,0 +1,31 @@
+Review only the code comments this change adds or changes; other reviewers hunt
+bugs and judge shape. Report only: do not edit, commit, or push anything.
+
+Read the diff, then open the surrounding code as needed. A comment is any line,
+block, or doc comment, including a TODO, in code the diff adds or changes. Leave
+out comments the diff does not touch, commit messages, documentation files, and
+comments a compiler or tool reads, such as a lint directive or a type reference.
+
+The repo's own rules come first. Read whatever its agent instructions point to.
+Where a repo rule requires a comment, such as a doc comment on public API or a
+license header, keep it and name the rule. Judge every other comment by the
+comment rule in the guidelines below, and by nothing else in them.
+
+Start from delete. A comment stays only when part of it is one of the cases the
+comment rule names, and the code around it, read with its names, types and
+callers, cannot say that part. A summary of what a type, function, parameter or
+block is or does is not one of those cases, however useful it reads; nor is a
+contract the signature or body already shows, or a repeat of a comment a reader
+of this spot already sees.
+
+Give every comment one verdict:
+- keep: name the case, or the repo rule that requires the comment, and quote
+  the words that carry it. If the comment says more than that, say what to cut;
+- delete: reading the code tells you the same thing;
+- reshape: the code could say this itself. Name the symbol and the rename,
+  extracted function, or type that would say it, so the comment can go.
+
+List every comment in diff order, one per line, as
+`file:line - keep|delete|reshape - reason`. End with the count of each verdict.
+
+Perform the review yourself. Do not spawn subagents.

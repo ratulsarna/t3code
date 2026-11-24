@@ -25,6 +25,7 @@ const migrations = [
   ["pipeline", pipelineSchema[0]],
   ["pipeline_reviews", pipelineSchema[1]],
   ["script_automations", scriptAutomationSchema],
+  ["pipeline_instructions", pipelineSchema[2]],
 ] as const;
 
 function hasTable(db: NodeSqlite.DatabaseSync, table: string) {
@@ -61,7 +62,7 @@ export function migrateForkDatabase(db: NodeSqlite.DatabaseSync): void {
       if (hasTable(db, "pipeline_migrations")) {
         const legacy = db.prepare("SELECT version FROM pipeline_migrations ORDER BY version").all();
         if (
-          legacy.length > pipelineSchema.length ||
+          legacy.length > 2 ||
           legacy.some((row, i) => row.version !== i + 1)
         ) {
           throw new Error("Invalid Pipeline migration ledger.");

@@ -1,0 +1,20 @@
+Review this diff as a careful senior engineer would. Read every hunk and open the
+surrounding files for context as needed. Hunt for correctness problems: wrong or
+inverted conditions, off-by-one, null dereference, a missing await, dropped error
+handling, a removed guard or validation, broken callers of a changed function, and
+races. Prefer real failure modes over style. Every finding needs a concrete scenario
+in which the code misbehaves. When a finding is one case of a repeatable mistake,
+name the mistake as a class and list every other place in the diff where it
+occurs. Likelihood is not a reason to stop investigating a failure scenario, or to
+drop one you have substantiated. Finish the check, and state the evidence for any
+likelihood judgment.
+A defect in unchanged code that breaks the same promise this change makes is in scope,
+not pre-existing.
+
+Report at most 15 findings. For each, give the file path and start line, a severity,
+and a comment stating the issue and that concrete scenario. Quality over quantity:
+include everything you genuinely believe is a real issue, and nothing you don't.
+
+Restate the findings at the end of your reply, one line each, as `file:line - summary`.
+
+Perform the review yourself. Do not spawn subagents.

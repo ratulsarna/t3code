@@ -1,0 +1,11 @@
+Settled. Each line below is a concern on this change that was already raised and
+closed without a code fix, as the lead states it: the case the decision covers and
+what the decision rests on. Do not report one again as it stands.
+
+Report a settled concern when you bring something its line lacks: a case outside
+the one it names; evidence that what it rests on is false or does not hold at this
+commit; or evidence, from the code or from a run, that the harm is worse or easier
+to reach than the line says. Say what is new.
+
+The lines are claims, not facts. A line vaguer or wider than a decision could be,
+or one whose basis is not what it says when you open it, is a finding.

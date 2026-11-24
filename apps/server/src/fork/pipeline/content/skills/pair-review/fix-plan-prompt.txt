@@ -1,0 +1,46 @@
+Read this fix plan against the code before anyone builds it. Nothing has been
+written yet: you are looking for what building exactly this plan would leave
+broken on the branch. Read-only; change nothing. Your report is advice to the
+plan's author, who decides what to take.
+
+The plan is below. Each section names one mistake, quotes the findings that
+reported it, lists every place the author says the mistake lives with what that
+place does today and after the fix, lists the places left out with a reason,
+and says how the product behaves differently for the people who use it. You were given the plan, the guidelines, and the
+branch, and nothing else.
+
+For each mistake:
+
+1. Read the quoted findings. The mistake as stated must cover every one of them.
+   A mistake stated narrower than its findings, such as one state or one caller
+   where the finding is about a rule, is a hole.
+2. Restate the mistake to yourself as the rule the code breaks. Search the branch,
+   and the unchanged code it calls or is called by, for every place that rule can
+   break: the sibling states and entry points, the other direction, retries,
+   restarts, error paths and early exits. Do not stop at the places listed. A
+   place where the mistake lives that is neither listed nor left out is a hole.
+3. Open every listed place. A row has a hole when the cited lines do not show what
+   it says, or when the fix as described would not produce the stated behavior there.
+4. Trace what the fix itself changes for the code around it: an ordering, a state,
+   a value others read. A new way to fail is a hole.
+5. Open each left-out place. It is a hole when the lines contradict its reason, or
+   when it is left to wait and the harm there is money, lost data, security, or a
+   crash. Whether an unlikely failure with minor harm is worth fixing is the
+   author's call, and so is a risk the user accepted.
+6. Read the `a user gets` line against the rows. A way the product would behave
+   differently for the people who use it once the rows are built, that the line
+   does not name, is a hole; its sequence is what they do and what they then get.
+
+A plan missing a part has a hole there: the mistake, the quoted findings, the
+places with file and line, the behavior after the fix, the left-out list, the
+`a user gets` line.
+
+Only these count. A better design, a cleanup, or a test the plan does not need
+does not belong in your report.
+
+Report each hole with the file path and line you opened and the concrete
+sequence, starting from something a user or the system does, in which the plan,
+once built, still misbehaves. Leave out a hole you cannot give that sequence
+for. Then list the files you read.
+
+Perform the check yourself. Do not spawn subagents.

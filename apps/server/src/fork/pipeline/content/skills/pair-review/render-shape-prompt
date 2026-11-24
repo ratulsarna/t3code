@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Emit the shape review prompt for a diff scope: the prompt, the guidelines the
+# run works to, and the task's plan and ticket. In Pipeline the guidelines file
+# is the run's guidelines.md, saved from `t3 pipeline instructions guidelines`.
+# Usage: render-shape-prompt '<diff scope>' <plan path> '<ticket>' <guidelines path>
+set -euo pipefail
+dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ $# -ne 4 ]]; then
+  echo "usage: render-shape-prompt '<diff scope>' <plan path> '<ticket>' <guidelines path>" >&2
+  exit 2
+fi
+if [[ ! -s "$4" ]]; then
+  echo "render-shape-prompt: guidelines file $4 is missing or empty" >&2
+  exit 1
+fi
+cat "$dir/shape-review-prompt.txt"
+printf '\n# Guidelines\n\n'
+cat "$4"
+printf '\nDiff scope: %s\nPlan: %s\nTicket: %s\n' "$1" "$2" "$3"

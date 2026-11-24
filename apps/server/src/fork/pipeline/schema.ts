@@ -47,4 +47,9 @@ export const pipelineSchema = [
    CREATE TABLE pipeline_settings (id INTEGER PRIMARY KEY CHECK(id = 1), lead_selection TEXT NOT NULL);
    CREATE TABLE imported_thread_links (card_id TEXT REFERENCES cards(id), thread_id TEXT NOT NULL,
      PRIMARY KEY(card_id, thread_id));`,
+  `ALTER TABLE instruction_snapshots ADD COLUMN workflow_snapshot TEXT;
+   CREATE TABLE instruction_overrides (
+     id TEXT PRIMARY KEY, content TEXT, saved_against TEXT,
+     version INTEGER NOT NULL, updated_at INTEGER NOT NULL
+   ) STRICT;`,
 ] as const;

@@ -16,6 +16,8 @@ import {
   shouldBundleCliDependency,
 } from "../../scripts/lib/cli-external-packages.ts";
 
+import { pipelineContentDefine } from "./src/fork/pipeline/packContent.ts";
+
 export { shouldBundleCliDependency };
 
 const repoEnv = loadRepoEnv();
@@ -150,6 +152,9 @@ export default mergeConfig(
         js: "#!/usr/bin/env node\n",
       },
       define: {
+        __T3CODE_PIPELINE_CONTENT__: pipelineContentDefine(
+          NodePath.join(import.meta.dirname, "src/fork/pipeline/content"),
+        ),
         __T3CODE_BUILD_CHANNEL__: JSON.stringify(cliBuildChannel),
         __T3CODE_TELEMETRY_CHANNEL__: JSON.stringify(telemetryChannel),
         __T3CODE_BUILD_RELAY_URL__: JSON.stringify(repoEnv.T3CODE_RELAY_URL?.trim() ?? ""),

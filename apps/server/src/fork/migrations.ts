@@ -2,7 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import type * as NodeSqlite from "node:sqlite";
-import { pathToFileURL } from "node:url";
+import * as NodeURL from "node:url";
 
 import { scriptAutomationSchema } from "./automations/schema.ts";
 import { pipelineSchema } from "./pipeline/schema.ts";
@@ -48,7 +48,7 @@ export function migrateForkDatabase(db: NodeSqlite.DatabaseSync): void {
   const hasLegacyAutomations =
     !automationSchemaRecorded && legacyPath !== null && NodeFS.existsSync(legacyPath);
   if (hasLegacyAutomations) {
-    const source = pathToFileURL(legacyPath);
+    const source = NodeURL.pathToFileURL(legacyPath);
     source.searchParams.set("mode", "ro");
     db.prepare("ATTACH DATABASE ? AS legacy_automations").run(source.href);
   }

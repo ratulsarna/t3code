@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z, type Infer } from "./zod.ts";
 
 export const githubIssueCommentSchema = z.object({
   author: z.string(),
@@ -7,7 +7,7 @@ export const githubIssueCommentSchema = z.object({
   createdAt: z.string(),
 });
 
-export type GithubIssueComment = z.infer<typeof githubIssueCommentSchema>;
+export type GithubIssueComment = Infer<typeof githubIssueCommentSchema>;
 
 export const githubIssueSummarySchema = z.object({
   url: z.string().url(),
@@ -19,14 +19,14 @@ export const githubIssueSummarySchema = z.object({
   updatedAt: z.string(),
 });
 
-export type GithubIssueSummary = z.infer<typeof githubIssueSummarySchema>;
+export type GithubIssueSummary = Infer<typeof githubIssueSummarySchema>;
 
 export const githubIssueDetailsSchema = githubIssueSummarySchema.extend({
   body: z.string(),
   comments: z.array(githubIssueCommentSchema),
 });
 
-export type GithubIssueDetails = z.infer<typeof githubIssueDetailsSchema>;
+export type GithubIssueDetails = Infer<typeof githubIssueDetailsSchema>;
 
 export const importedIssueSchema = githubIssueDetailsSchema.extend({
   importedBy: z.string(),
@@ -34,4 +34,4 @@ export const importedIssueSchema = githubIssueDetailsSchema.extend({
   error: z.string().nullable(),
 });
 
-export type ImportedIssue = z.infer<typeof importedIssueSchema>;
+export type ImportedIssue = Infer<typeof importedIssueSchema>;

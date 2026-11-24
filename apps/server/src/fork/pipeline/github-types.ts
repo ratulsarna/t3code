@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z, type Infer } from "./zod.ts";
 
 export const githubCheckSchema = z
   .object({
@@ -27,7 +27,7 @@ export interface GithubSnapshot {
   draft: boolean;
   headSha: string;
   author: string;
-  checks: z.infer<typeof githubCheckSchema>[];
+  checks: Infer<typeof githubCheckSchema>[];
   mergeable: "mergeable" | "conflicting" | "unknown";
   reviewDecision: string | null;
   feedback: GithubFeedback[];
@@ -54,7 +54,7 @@ export const githubStatusSchema = z
   })
   .strict();
 
-export type GithubStatus = z.infer<typeof githubStatusSchema>;
+export type GithubStatus = Infer<typeof githubStatusSchema>;
 
 export interface ReviewBatch {
   manualDispatch?: boolean;

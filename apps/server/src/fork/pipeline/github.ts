@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off -- GitHub polling records the wall time of the successful read.
-import { z } from "zod";
+import { z, type Infer, type ZodType } from "./zod.ts";
 import type { GithubFeedback, GithubSnapshot } from "./github-types.ts";
 import { runGh } from "./gh.ts";
 
@@ -344,8 +344,8 @@ async function readPages(
 function validatePages<T>(
   rawPages: unknown[],
   description: string,
-  extract: (data: unknown) => { nodes: unknown[]; pageInfo: z.infer<typeof pageInfoSchema> } | null,
-  nodeSchema: z.ZodType<T>,
+  extract: (data: unknown) => { nodes: unknown[]; pageInfo: Infer<typeof pageInfoSchema> } | null,
+  nodeSchema: ZodType<T>,
 ): T[] {
   const result: T[] = [];
   for (const [index, rawPage] of rawPages.entries()) {

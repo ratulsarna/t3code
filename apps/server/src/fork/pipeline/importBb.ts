@@ -6,7 +6,7 @@ import * as NodeSqlite from "node:sqlite";
 import { normalizePullRequestUrl } from "./github.ts";
 import { normalizeGithubIssueUrl } from "./issue.ts";
 import { initialGithubState, githubStatusSchema } from "./github-types.ts";
-import { z } from "zod";
+import { z, type Infer } from "./zod.ts";
 import { ModelSelection } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { bbSourceThreadId } from "../history/ids.ts";
@@ -154,7 +154,7 @@ const bbDefaultSchema = z.object({
 });
 const parseNativeLead = Schema.decodeUnknownSync(ModelSelection);
 
-function importLead(value: z.infer<typeof bbLeadSchema>) {
+function importLead(value: Infer<typeof bbLeadSchema>) {
   const claude = value.providerId === "claude-code";
   return parseNativeLead({
     instanceId: claude ? "claudeAgent" : value.providerId,

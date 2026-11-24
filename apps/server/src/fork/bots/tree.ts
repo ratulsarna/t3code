@@ -101,8 +101,7 @@ const OPEN = new Set<string>();
 
 function readLines<T>(dir: string, repair: boolean): T[] {
   if (!NodeFS.existsSync(dir)) return [];
-  return NodeFS
-    .readdirSync(dir)
+  return NodeFS.readdirSync(dir)
     .filter((f) => f.endsWith(".jsonl"))
     .sort()
     .flatMap((f) => {

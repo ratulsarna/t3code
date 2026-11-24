@@ -1,3 +1,4 @@
+import { BotSidebarEntry } from "./fork/bots/sidebar.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { AcpRegistryUrlAuthAction } from "./acpRegistry.ts";
@@ -708,6 +709,7 @@ export const ServerFeatureFlags = Schema.Struct({
 export type ServerFeatureFlags = typeof ServerFeatureFlags.Type;
 
 export const ServerConfig = Schema.Struct({
+  bots: Schema.optionalKey(Schema.Array(BotSidebarEntry)),
   environment: ExecutionEnvironmentDescriptor,
   auth: ServerAuthDescriptor,
   cwd: TrimmedNonEmptyString,

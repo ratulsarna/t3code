@@ -1,3 +1,4 @@
+import { sidebarBots } from "./fork/bots/config.ts";
 import { GitCommandError, OrchestrationDispatchCommandError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
@@ -1901,7 +1902,11 @@ export const layerWsRpc = (
             : directEndpoints.resolve(),
         });
 
+        const bots = currentSession.scopes.includes(AuthOrchestrationOperateScope)
+          ? sidebarBots(config.stateDir)
+          : [];
         return {
+          ...(bots.length === 0 ? {} : { bots }),
           environment,
           auth,
           cwd: config.cwd,

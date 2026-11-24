@@ -204,9 +204,7 @@ export const layer = Layer.unwrap(
       });
       ids.add(job.id);
     }
-    return Layer.effectDiscard(
-      runForkMigrations.pipe(Effect.andThen(install(jobs))),
-    ).pipe(
+    return Layer.effectDiscard(runForkMigrations.pipe(Effect.andThen(install(jobs)))).pipe(
       Layer.provide(
         NodeSqliteClient.layer({
           filename: path.join(config.stateDir, "script-automations.sqlite"),

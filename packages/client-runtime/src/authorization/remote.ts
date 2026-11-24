@@ -1,3 +1,4 @@
+import { outboundTelemetryEnabled } from "@t3tools/shared/otelEnvironment";
 import {
   AuthAccessTokenType,
   type AuthClientPresentationMetadata,
@@ -52,7 +53,8 @@ export interface ClientOwnerParams {
  * Tells the environment, for analytics, which T3 Connect account and device
  * are connecting, so it can count the environment as theirs.
  */
-export const readClientOwnerParams = Effect.gen(function* () {
+export const readClientOwnerParams = Effect.gen(function* (): Effect.fn.Return<ClientOwnerParams> {
+  if (!outboundTelemetryEnabled) return {};
   const session = yield* Effect.serviceOption(ClientCapabilities.CloudSession);
   const account = Option.isSome(session) ? yield* session.value.identity : Option.none();
   const device = yield* (yield* ClientCapabilities.AnalyticsDevice).id;

@@ -16,7 +16,7 @@ import {
   HttpServerRequest,
   HttpServerResponse,
 } from "effect/http";
-import { describe } from "vite-plus/test";
+import { describe, vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
 import * as OtlpEndpointCheck from "./OtlpEndpointCheck.ts";
@@ -27,6 +27,11 @@ interface PostedRequest {
   readonly body: string;
   readonly signal: AbortSignal;
 }
+
+vi.mock("@t3tools/shared/otelEnvironment", async (importOriginal) => ({
+  ...(await importOriginal<typeof OtelEnvironment>()),
+  outboundTelemetryEnabled: true,
+}));
 
 const checkWith = (
   status: number | null,

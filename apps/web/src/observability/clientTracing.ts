@@ -1,3 +1,4 @@
+import { outboundTelemetryEnabled } from "@t3tools/shared/otelEnvironment";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -74,7 +75,7 @@ let activeConfigKey: string | null = null;
 let pendingConfiguration = Promise.resolve();
 
 export function configureClientTracing(): Promise<void> {
-  if (activeConfigKey !== null) {
+  if (!outboundTelemetryEnabled || activeConfigKey !== null) {
     return pendingConfiguration;
   }
   pendingConfiguration = pendingConfiguration.finally(() => applyClientTracingConfig());

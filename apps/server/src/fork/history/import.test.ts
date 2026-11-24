@@ -1,4 +1,3 @@
-import * as NodePath from "node:path";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -6,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 
 import * as ServerConfig from "../../config.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
@@ -62,10 +62,11 @@ const messageWithFile = (path: string): Row => ({
 
 const fixture = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const config = yield* ServerConfig.ServerConfig;
-  const spool = NodePath.join(config.baseDir, "history.jsonl");
-  const mapping = NodePath.join(config.baseDir, "workspace-map.json");
-  const uploads = NodePath.join(config.baseDir, "source-uploads");
+  const spool = path.join(config.baseDir, "history.jsonl");
+  const mapping = path.join(config.baseDir, "workspace-map.json");
+  const uploads = path.join(config.baseDir, "source-uploads");
   const write = (record: HistoryRecord) => fs.writeFileString(spool, JSON.stringify(record) + "\n");
   const run = (workspaceMapFile?: string) =>
     Effect.scoped(importHistory({ file: spool, attachmentRoot: uploads, workspaceMapFile }));
@@ -78,7 +79,7 @@ const fixture = Effect.gen(function* () {
     ProjectionStore.ProjectionStoreV2.use((store) =>
       store.getThreadRecords(bbThreadId(id), ["messages"]),
     ).pipe(Effect.provide(projectionLayer));
-  return { fs, config, mapping, uploads, write, run, find, messages };
+  return { fs, path, config, mapping, uploads, write, run, find, messages };
 });
 
 const testServices = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer);
@@ -88,7 +89,7 @@ const layerTest = ServerConfig.layerTest(".", { prefix: "bb-history-review" }).p
 
 it.effect("an absent attachment store leaves the thread available for a corrected retry", () =>
   Effect.gen(function* () {
-    const { fs, uploads, write, run, find, messages } = yield* fixture;
+    const { fs, path, uploads, write, run, find, messages } = yield* fixture;
     const record = defaultRecord("attachment-retry");
     yield* write({
       ...record,
@@ -117,9 +118,9 @@ it.effect("an absent attachment store leaves the thread available for a correcte
     assert.isTrue(Exit.isFailure(yield* Effect.exit(run())));
     assert.isNull(yield* find(record.thread.id));
 
-    const projectUploads = NodePath.join(uploads, record.thread.project_id);
+    const projectUploads = path.join(uploads, record.thread.project_id);
     yield* fs.makeDirectory(projectUploads);
-    yield* fs.writeFileString(NodePath.join(projectUploads, "memo.pdf"), "abc");
+    yield* fs.writeFileString(path.join(projectUploads, "memo.pdf"), "abc");
     yield* run();
     const imported = yield* messages(record.thread.id);
     assert.deepEqual(
@@ -131,10 +132,10 @@ it.effect("an absent attachment store leaves the thread available for a correcte
 
 it.effect("a corrected workspace mapping can retry after a persisted project rejection", () =>
   Effect.gen(function* () {
-    const { fs, config, mapping, uploads, write, run, find } = yield* fixture;
+    const { fs, path, config, mapping, uploads, write, run, find } = yield* fixture;
     yield* fs.makeDirectory(uploads);
-    const occupied = NodePath.join(config.baseDir, "occupied");
-    const corrected = NodePath.join(config.baseDir, "corrected");
+    const occupied = path.join(config.baseDir, "occupied");
+    const corrected = path.join(config.baseDir, "corrected");
     yield* fs.makeDirectory(occupied);
     yield* fs.makeDirectory(corrected);
 
@@ -192,7 +193,9 @@ it("matches the canonical upload inventory while keeping an executor-local attac
     (event) => event.type === "turn-item.updated" && event.payload.type === "system_notice",
   );
   assert.equal(
-    notice?.payload.type === "system_notice" && notice.payload.message,
+    notice?.type === "turn-item.updated" &&
+      notice.payload.type === "system_notice" &&
+      notice.payload.message,
     `bb attachment unavailable: ${executorPath}`,
   );
 });

@@ -1,4 +1,4 @@
-import { BotsSection } from "../fork/bots/BotsSection";
+import { forkSidebar } from "../fork/sidebar";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { msg, T, useGT, useMessages } from "gt-react";
 import { m } from "../i18n/messages";
@@ -3069,6 +3069,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       ? shortcutLabelForCommand(keybindings, "chat.newLocal")
       : undefined);
   const newThreadInProjectShortcutLabel = shortcutLabelForCommand(keybindings, "chat.newLocal");
+  const fork = forkSidebar({
+    configs: serverConfigs,
+    activeThreadKey: routeThreadKey,
+    openThread: navigateToThread,
+  });
   return (
     <SidebarFolderDrop>
       <SidebarChromeHeader isElectron={isElectron} />
@@ -3328,13 +3333,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         }
       >
         <SidebarGroup className="flex-1" role="presentation">
-          {!isSearchingThreads && (
-            <BotsSection
-              configs={serverConfigs}
-              activeThreadKey={routeThreadKey}
-              openThread={navigateToThread}
-            />
-          )}
+          {!isSearchingThreads && fork.threads}
           {isSearchingThreads ? (
             threadSearchResults.length > 0 ? (
               <TooltipProvider
@@ -3818,7 +3817,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           ) : null}
         </SidebarGroup>
       </SidebarContent>
-      <SidebarChromeFooter />
+      <SidebarChromeFooter utilityItem={fork.utility} />
     </SidebarFolderDrop>
   );
 }

@@ -1,4 +1,5 @@
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+// @effect-diagnostics nodeBuiltinImport:off -- SQLite transactions run synchronously alongside Pipeline.
+import * as NodeSqlite from "node:sqlite";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -8,12 +9,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/sql/SqlClient";
 
 import { ServerConfig } from "../../config.ts";
 import { ProcessRunner, type ProcessRunOutput } from "../../processRunner.ts";
 import { Scheduler } from "../../scheduling/Scheduler.ts";
-import { runForkMigrations } from "../migrations.ts";
+import { forkDatabaseFilename, migrateForkDatabase, withForkTransaction } from "../migrations.ts";
 import { nextRunAt, validateSchedule } from "./Schedule.ts";
 
 const CONFIG_FILE = "script-automations.json";
@@ -72,55 +72,67 @@ function classify(result: ProcessRunOutput) {
   return { status: "succeeded", output, code, reason: null };
 }
 
-const install = Effect.fn("ScriptAutomations.install")(function* (jobs: readonly Job[]) {
-  const sql = yield* SqlClient.SqlClient;
+const install = Effect.fn("ScriptAutomations.install")(function* (
+  filename: string,
+  jobs: readonly Job[],
+) {
+  const db = yield* Effect.acquireRelease(
+    Effect.sync(() => new NodeSqlite.DatabaseSync(filename)),
+    (connection) => Effect.sync(() => connection.close()),
+  );
+  yield* Effect.sync(() => migrateForkDatabase(db));
   const scheduler = yield* Scheduler;
   const process = yield* ProcessRunner;
 
   const bootedAt = yield* Clock.currentTimeMillis;
   const ids = yield* encodeIds(jobs.map(({ id }) => id));
-  yield* sql.withTransaction(
-    Effect.gen(function* () {
-      yield* sql`UPDATE script_schedules SET failures = 0 WHERE id IN (
+  yield* Effect.sync(() =>
+    withForkTransaction(db, () => {
+      db.exec(`UPDATE script_schedules SET failures = 0 WHERE id IN (
         SELECT job_id FROM script_runs WHERE status = 'running'
-      )`;
-      yield* sql`UPDATE script_runs
-        SET status = 'skipped', finished_at = ${bootedAt},
+      )`);
+      db.prepare(`UPDATE script_runs
+        SET status = 'skipped', finished_at = ?,
           reason = 'interrupted: server restarted before the script result was recorded'
-        WHERE status = 'running'`;
-      yield* sql`UPDATE script_schedules SET next_run_at = NULL, failures = 0
-        WHERE id NOT IN (SELECT value FROM json_each(${ids}))`;
+        WHERE status = 'running'`).run(bootedAt);
+      db.prepare(`UPDATE script_schedules SET next_run_at = NULL, failures = 0
+        WHERE id NOT IN (SELECT value FROM json_each(?))`).run(ids);
+      const save = db.prepare(`INSERT INTO script_schedules (id, cron, timezone, next_run_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          cron = excluded.cron, timezone = excluded.timezone,
+          next_run_at = excluded.next_run_at, failures = 0
+        WHERE script_schedules.cron <> excluded.cron
+           OR script_schedules.timezone <> excluded.timezone
+           OR (script_schedules.next_run_at IS NULL) <> (excluded.next_run_at IS NULL)`);
       for (const job of jobs) {
-        const next = job.enabled ? nextRunAt(job, bootedAt) : null;
-        yield* sql`INSERT INTO script_schedules (id, cron, timezone, next_run_at)
-          VALUES (${job.id}, ${job.cron}, ${job.timezone}, ${next})
-          ON CONFLICT(id) DO UPDATE SET
-            cron = excluded.cron, timezone = excluded.timezone,
-            next_run_at = excluded.next_run_at, failures = 0
-          WHERE script_schedules.cron <> excluded.cron
-             OR script_schedules.timezone <> excluded.timezone
-             OR (script_schedules.next_run_at IS NULL) <> (excluded.next_run_at IS NULL)`;
+        save.run(job.id, job.cron, job.timezone, job.enabled ? nextRunAt(job, bootedAt) : null);
       }
     }),
   );
+  const findDue = db.prepare(`SELECT next_run_at, failures FROM script_schedules
+    WHERE id = ? AND next_run_at <= ?
+      AND NOT EXISTS (SELECT 1 FROM script_runs WHERE job_id = ? AND status = 'running')`);
+  const advance = db.prepare("UPDATE script_schedules SET next_run_at = ? WHERE id = ?");
+  const claimRun = db.prepare(`INSERT INTO script_runs (job_id, due_at, started_at, status)
+    VALUES (?, ?, ?, 'running') ON CONFLICT(job_id, due_at) DO NOTHING`);
+  const completeRun = db.prepare(`UPDATE script_runs SET status = ?, finished_at = ?,
+    output = ?, exit_code = ?, reason = ? WHERE job_id = ? AND due_at = ? AND status = 'running'`);
+  const retry = db.prepare(`UPDATE script_schedules SET failures = ?,
+    next_run_at = MIN(next_run_at, COALESCE(?, next_run_at)) WHERE id = ?`);
 
   const runDue = (job: Job) =>
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
-        const claim = yield* sql.withTransaction(
-          Effect.gen(function* () {
-            const [due] = yield* sql<{ next_run_at: number; failures: number }>`
-              SELECT next_run_at, failures FROM script_schedules
-              WHERE id = ${job.id} AND next_run_at <= ${now}
-                AND NOT EXISTS (SELECT 1 FROM script_runs WHERE job_id = ${job.id} AND status = 'running')`;
+        const claim = yield* Effect.sync(() =>
+          withForkTransaction(db, () => {
+            const due = findDue.get(job.id, now, job.id) as
+              | { next_run_at: number; failures: number }
+              | undefined;
             if (!due) return null;
-            yield* sql`UPDATE script_schedules
-              SET next_run_at = ${nextRunAt(job, now)} WHERE id = ${job.id}`;
-            const [run] = yield* sql`INSERT INTO script_runs (job_id, due_at, started_at, status)
-              VALUES (${job.id}, ${due.next_run_at}, ${now}, 'running')
-              ON CONFLICT(job_id, due_at) DO NOTHING RETURNING job_id`;
-            return run ? due : null;
+            advance.run(nextRunAt(job, now), job.id);
+            return claimRun.run(job.id, due.next_run_at, now).changes === 0 ? null : due;
           }),
         );
         if (!claim) return;
@@ -160,14 +172,18 @@ const install = Effect.fn("ScriptAutomations.install")(function* (jobs: readonly
         const failures = outcome.status === "failed" ? claim.failures + 1 : 0;
         const delay = RETRY_DELAYS_MS[failures - 1];
         const retryAt = delay === undefined ? null : finishedAt + delay;
-        yield* sql.withTransaction(
-          Effect.gen(function* () {
-            yield* sql`UPDATE script_runs SET status = ${outcome.status}, finished_at = ${finishedAt},
-              output = ${outcome.output}, exit_code = ${outcome.code}, reason = ${outcome.reason}
-              WHERE job_id = ${job.id} AND due_at = ${claim.next_run_at} AND status = 'running'`;
-            yield* sql`UPDATE script_schedules SET failures = ${failures},
-              next_run_at = MIN(next_run_at, COALESCE(${retryAt}, next_run_at))
-              WHERE id = ${job.id}`;
+        yield* Effect.sync(() =>
+          withForkTransaction(db, () => {
+            completeRun.run(
+              outcome.status,
+              finishedAt,
+              outcome.output,
+              outcome.code,
+              outcome.reason,
+              job.id,
+              claim.next_run_at,
+            );
+            retry.run(failures, retryAt, job.id);
           }),
         );
         if (outcome.status === "failed") {
@@ -204,13 +220,7 @@ export const layer = Layer.unwrap(
       });
       ids.add(job.id);
     }
-    return Layer.effectDiscard(runForkMigrations.pipe(Effect.andThen(install(jobs)))).pipe(
-      Layer.provide(
-        NodeSqliteClient.layer({
-          filename: path.join(config.stateDir, "script-automations.sqlite"),
-        }),
-      ),
-    );
+    return Layer.effectDiscard(install(path.join(config.stateDir, forkDatabaseFilename), jobs));
   }),
 ).pipe(
   Layer.catchCause((cause) => {

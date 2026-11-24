@@ -23,7 +23,9 @@ test("links Pipeline cards only to verified History imports and reuses History's
       db.exec(`CREATE TABLE orchestration_v2_projection_threads (
         thread_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, deleted_at TEXT
       )`);
-      const insert = db.prepare("INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, NULL)");
+      const insert = db.prepare(
+        "INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, NULL)",
+      );
       insert.run(bbThreadId("lead"), JSON.stringify({ historyOrigin: "bb_import" }));
       insert.run(bbThreadId("native"), JSON.stringify({ historyOrigin: "native" }));
     }
@@ -45,10 +47,12 @@ test("links Pipeline cards only to verified History imports and reuses History's
     });
     expect(importBbPipeline(source, target, home, models)).toMatchObject({ cards: 0, skipped: 2 });
     using db = new NodeSqlite.DatabaseSync(target, { readOnly: true });
-    expect(db.prepare("SELECT project_id, lead_thread_id FROM cards ORDER BY title").all()).toEqual([
-      { project_id: bbProjectId("project"), lead_thread_id: bbThreadId("lead") },
-      { project_id: bbProjectId("project"), lead_thread_id: null },
-    ]);
+    expect(db.prepare("SELECT project_id, lead_thread_id FROM cards ORDER BY title").all()).toEqual(
+      [
+        { project_id: bbProjectId("project"), lead_thread_id: bbThreadId("lead") },
+        { project_id: bbProjectId("project"), lead_thread_id: null },
+      ],
+    );
   } finally {
     NodeFS.rmSync(home, { recursive: true, force: true });
   }

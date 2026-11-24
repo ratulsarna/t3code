@@ -51,6 +51,16 @@ export const layer = HttpApiBuilder.group(
           Effect.andThen(pipeline.projects(query.hostId)),
         ),
       )
+      .handle("issues", ({ query }) =>
+        requireScope(AuthOrchestrationReadScope).pipe(
+          Effect.andThen(pipeline.issues(query.hostId, query.projectId)),
+        ),
+      )
+      .handle("stats", ({ query }) =>
+        requireScope(AuthOrchestrationReadScope).pipe(
+          Effect.andThen(pipeline.stats(query.projectId, query.hostId, query.range)),
+        ),
+      )
       .handle("mutate", ({ payload }) =>
         requireScope(AuthOrchestrationOperateScope).pipe(Effect.andThen(pipeline.mutate(payload))),
       );
@@ -59,7 +69,7 @@ export const layer = HttpApiBuilder.group(
 
 export const layerReports = Layer.unwrap(
   Pipeline.pipe(
-    Effect.map(({ store }) =>
+    Effect.map(({ store, wakeGithub }) =>
       HttpRouter.add(
         "POST",
         "/api/fork/pipeline/cards/:cardId/report",
@@ -88,7 +98,8 @@ export const layerReports = Layer.unwrap(
               detail: isPipelineFailure(error) ? error.message : null,
             }),
           }).pipe(
-            Effect.map(() => HttpServerResponse.empty({ status: 204 })),
+            Effect.andThen(wakeGithub),
+            Effect.as(HttpServerResponse.empty({ status: 204 })),
             Effect.catch(({ detail }) =>
               Effect.succeed(
                 detail === null

@@ -12,7 +12,11 @@ const hostId = EnvironmentId.make("worker");
 const projectId = ProjectId.make("checkout");
 const origin = "http://localhost:4000";
 
-const create = (store: ReturnType<typeof createCardStore>, title: string) =>
+const create = (
+  store: ReturnType<typeof createCardStore>,
+  title: string,
+  repository: string | null = null,
+) =>
   store.mutate(
     {
       kind: "create",
@@ -30,6 +34,8 @@ const create = (store: ReturnType<typeof createCardStore>, title: string) =>
     },
     "Pinned lead instructions",
     origin,
+    null,
+    repository,
   )!;
 
 test("a crash keeps an ambiguous launch counted and admits the preferred card only after release", () => {
@@ -87,4 +93,36 @@ test("a card token cannot authorize another card or acknowledge an obsolete paus
   expect(store.get(first)?.run_state).toBe("pausing");
   expect(store.get(first)?.occupies_slot).toBe(1);
   expect(() => store.report(first, { kind: "status", column: "done" })).toThrow("held");
+});
+
+test("a lead can acknowledge a sent review before the hub receives its receipt", () => {
+  using db = new NodeSqlite.DatabaseSync(":memory:");
+  const store = createCardStore(db);
+  const id = create(store, "PR", "owner/repo");
+  const url = "https://github.com/owner/repo/pull/1";
+  store.claim();
+  store.apply(id, () => ({ lead_thread_id: "lead", operation: null }));
+  expect(() =>
+    store.report(id, { kind: "pull_request", url: "https://github.com/owner/other/pull/1" }),
+  ).toThrow("repository");
+  store.report(id, { kind: "pull_request", url });
+  store.updateGithub(id, url, () => ({
+    github_state: JSON.stringify({
+      status: { headSha: "1234" },
+      batch: { id: "batch", state: "sending", headSha: "1234" },
+    }),
+  }));
+  const ack = { kind: "review_wait", handled: "batch" } as const;
+  store.report(id, ack);
+  store.report(id, ack);
+  expect(
+    db
+      .prepare(
+        "SELECT kind, count(*) AS count FROM card_history WHERE kind IN ('review_delivered', 'review_handled') GROUP BY kind",
+      )
+      .all(),
+  ).toMatchObject([
+    { kind: "review_delivered", count: 1 },
+    { kind: "review_handled", count: 1 },
+  ]);
 });

@@ -22,7 +22,9 @@ import {
   usePrimaryEnvironmentId,
 } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
-import { mutate, pipelineBoardAtom, pipelineProjectsAtom } from "./api";
+import { mutate, pipelineBoardAtom, pipelineIssuesAtom, pipelineProjectsAtom } from "./api";
+
+import { PipelineStatsPanel } from "./PipelineStats.tsx";
 
 const selectClass = "h-8 max-w-full rounded-md border bg-background px-2 text-sm";
 const inputClass = "w-full rounded-md border bg-background px-2 py-1.5 text-sm";
@@ -91,10 +93,11 @@ function TaskBoard({ hub }: { hub: EnvironmentId }) {
   const [chosenHost, setHost] = useState("");
   const [chosenProject, setProject] = useState("");
   const [filter, setFilter] = useState("open");
-  const [view, setView] = useState(() =>
+  const [view, setView] = useState<"list" | "board" | "stats">(() =>
     window.localStorage.getItem("pipeline:view") === "board" ? "board" : "list",
   );
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [settings, setSettings] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -109,14 +112,18 @@ function TaskBoard({ hub }: { hub: EnvironmentId }) {
 
   const hostOptions = new Map(board?.hosts.map(({ id, label }) => [id, label]));
   for (const card of board?.cards ?? []) {
-    if (!hostOptions.has(card.hostId)) hostOptions.set(card.hostId, card.hostId);
+    if (!hostOptions.has(card.hostId))
+      hostOptions.set(card.hostId, card.historical ? gt("Imported cards") : card.hostId);
   }
   const hostId =
     [...hostOptions.keys()].find((id) => id === chosenHost) ??
     hostOptions.keys().next().value ??
     null;
 
-  const projectsAtom = hostId ? pipelineProjectsAtom(hub, hostId) : null;
+  const projectsAtom =
+    hostId && board?.hosts.some((host) => host.id === hostId)
+      ? pipelineProjectsAtom(hub, hostId)
+      : null;
   const { data: availableProjects, error: projectError } = useEnvironmentQuery(projectsAtom);
   const projects = new Map(availableProjects?.map(({ projectId, title }) => [projectId, title]));
   for (const card of board?.cards ?? []) {
@@ -144,6 +151,9 @@ function TaskBoard({ hub }: { hub: EnvironmentId }) {
         return card.column === filter;
     }
   });
+  const githubRepo = availableProjects?.find(
+    (project) => project.projectId === projectId,
+  )?.githubRepository;
   const occupancy = projectCards.filter((card) => card.occupiesSlot).length;
   const waiting = projectCards.filter((card) => card.waitingReason !== null).length;
   const limit =
@@ -175,7 +185,7 @@ function TaskBoard({ hub }: { hub: EnvironmentId }) {
       card={card}
       showStage={showStage}
       hub={hub}
-      direct={connected.includes(card.hostId)}
+      direct={connected.includes(card.leadEnvironmentId ?? card.hostId)}
       submit={submit}
       busy={busy}
     />
@@ -261,6 +271,15 @@ function TaskBoard({ hub }: { hub: EnvironmentId }) {
               <Columns3Icon />
               <T>Board</T>
             </Button>
+            <Button
+              size="sm"
+              variant={view === "stats" ? "secondary" : "ghost"}
+              aria-pressed={view === "stats"}
+              disabled={projectId === null}
+              onClick={() => setView("stats")}
+            >
+              <T>Stats</T>
+            </Button>
           </div>
           <select
             aria-label={gt("Filter tasks")}
@@ -287,6 +306,11 @@ function TaskBoard({ hub }: { hub: EnvironmentId }) {
             ))}
           </select>
           <div className="ml-auto flex gap-2">
+            {githubRepo && (
+              <Button size="sm" variant="outline" onClick={() => setImporting(!importing)}>
+                <T>Import issues</T>
+              </Button>
+            )}
             <Button
               size="sm"
               variant="outline"
@@ -349,6 +373,16 @@ function TaskBoard({ hub }: { hub: EnvironmentId }) {
             </Button>
           </form>
         )}
+        {importing && githubRepo && hostId && projectId && (
+          <IssuePicker
+            hub={hub}
+            hostId={hostId}
+            projectId={projectId}
+            cards={projectCards}
+            busy={busy}
+            submit={submit}
+          />
+        )}
         {creating && hostId && projectId && (
           <NewTask
             key={`${hostId}:${projectId}`}
@@ -361,7 +395,9 @@ function TaskBoard({ hub }: { hub: EnvironmentId }) {
         )}
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-4">
-        {cards.length === 0 ? (
+        {view === "stats" && hostId && projectId ? (
+          <PipelineStatsPanel hub={hub} hostId={hostId} projectId={projectId} />
+        ) : cards.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             <T>No tasks match this view.</T>
           </p>
@@ -384,6 +420,73 @@ function TaskBoard({ hub }: { hub: EnvironmentId }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function IssuePicker({
+  hub,
+  hostId,
+  projectId,
+  cards,
+  busy,
+  submit,
+}: {
+  hub: EnvironmentId;
+  hostId: EnvironmentId;
+  projectId: ProjectId;
+  cards: ReadonlyArray<PipelineCard>;
+  busy: boolean;
+  submit: Submit;
+}) {
+  const issues = useEnvironmentQuery(pipelineIssuesAtom(hub, hostId, projectId));
+  return (
+    <div className="max-h-56 space-y-1 overflow-auto rounded border p-2">
+      {issues.error && <p role="alert">{issues.error}</p>}
+      {issues.isPending && !issues.data && (
+        <p>
+          <T>Loading assigned issues…</T>
+        </p>
+      )}
+      {issues.data?.length === 0 && (
+        <p>
+          <T>No open issues are assigned to you.</T>
+        </p>
+      )}
+      {issues.data?.map((issue) => {
+        const saved = cards.some((card) => card.issueUrl === issue.url);
+        return (
+          <div key={issue.url} className="flex items-center justify-between gap-3 border-b py-1">
+            <a href={issue.url} target="_blank" rel="noreferrer">
+              #{issue.number} {issue.title}
+            </a>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy || saved}
+              onClick={() =>
+                void submit({
+                  kind: "create",
+                  card: {
+                    hostId,
+                    projectId,
+                    issueUrl: issue.url,
+                    title: issue.title.slice(0, 120),
+                    body: "",
+                    baseRef: "HEAD",
+                    mode: "manual",
+                    size: "standard",
+                    shapeReview: true,
+                    start: false,
+                  },
+                })
+              }
+            >
+              {saved ? <T>Imported</T> : <T>Import</T>}
+            </Button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -509,7 +612,8 @@ function TaskCard({
 }) {
   const gt = useGT();
   const thread = card.leadThreadId;
-  const active = card.startRequested && card.column !== "done";
+  const leadEnvironmentId = card.leadEnvironmentId ?? card.hostId;
+  const active = !card.historical && card.startRequested && card.column !== "done";
   const canStop = active && ["running", "pause_requested", "pausing"].includes(card.runState);
   const title: ReactNode =
     thread === null ? (
@@ -517,7 +621,7 @@ function TaskCard({
     ) : direct ? (
       <Link
         to="/$environmentId/$threadId"
-        params={{ environmentId: card.hostId, threadId: thread }}
+        params={{ environmentId: leadEnvironmentId, threadId: thread }}
         className="hover:underline"
       >
         {card.title}
@@ -525,7 +629,11 @@ function TaskCard({
     ) : (
       <Link
         to="/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId"
-        params={{ viaEnvironmentId: hub, linkedEnvironmentId: card.hostId, linkedThreadId: thread }}
+        params={{
+          viaEnvironmentId: hub,
+          linkedEnvironmentId: leadEnvironmentId,
+          linkedThreadId: thread,
+        }}
         className="hover:underline"
       >
         {card.title}
@@ -541,7 +649,62 @@ function TaskCard({
           </span>
         )}
       </div>
-      {!card.startRequested && (
+      {card.historical && (
+        <p className="text-xs text-muted-foreground">
+          {card.column === "done"
+            ? gt("Imported history")
+            : card.runState === "paused"
+              ? gt("Imported · held")
+              : gt("Starting a new lead")}
+        </p>
+      )}
+      {card.issueUrl && (
+        <a href={card.issueUrl} target="_blank" rel="noreferrer" className="text-xs underline">
+          <T>Issue</T>
+        </a>
+      )}
+      {card.pullRequest && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <a href={card.pullRequest.url} target="_blank" rel="noreferrer" className="underline">
+            <T>Pull request</T>
+          </a>
+          <span>{card.pullRequest.state}</span>
+          {card.pullRequest.draft && (
+            <span>
+              <T>Draft</T>
+            </span>
+          )}
+          <span>{card.pullRequest.review}</span>
+          {card.pullRequest.checks.map((check) => (
+            <span key={check.name}>
+              {check.name} · {check.state}
+            </span>
+          ))}
+        </div>
+      )}
+      {card.pullRequest && card.pullRequest.pendingFeedback.length > 0 && (
+        <div className="flex flex-wrap gap-2 text-xs">
+          <span>
+            <T>Feedback held for triage</T>
+          </span>
+          {card.pullRequest.pendingFeedback.map(({ id, author, url }) => (
+            <a href={url} key={id} target="_blank" rel="noreferrer" className="underline">
+              {author}
+            </a>
+          ))}
+        </div>
+      )}
+      {card.pullRequest?.error && (
+        <p role="alert" className="text-xs text-destructive">
+          {card.pullRequest.error}
+        </p>
+      )}
+      {card.worktreeRetired && (
+        <p className="text-xs text-muted-foreground">
+          <T>Worktree retired</T>
+        </p>
+      )}
+      {!card.historical && !card.startRequested && (
         <p className="text-xs text-muted-foreground">
           <T>Not started</T>
         </p>
@@ -571,60 +734,81 @@ function TaskCard({
         </summary>
         {card.body && <p className="my-2 whitespace-pre-wrap break-words">{card.body}</p>}
         {card.result && <p className="my-2 whitespace-pre-wrap break-words">{card.result}</p>}
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {!card.startRequested && (
-            <CardButton busy={busy} submit={submit} action={{ kind: "start", id: card.id }}>
-              <T>Start</T>
-            </CardButton>
-          )}
-          {card.runState === "running" && card.launchError && (
-            <CardButton busy={busy} submit={submit} action={{ kind: "retry", id: card.id }}>
-              <T>Retry</T>
-            </CardButton>
-          )}
-          {active && card.runState === "running" && (
-            <CardButton busy={busy} submit={submit} action={{ kind: "pause", id: card.id }}>
-              <T>Pause</T>
-            </CardButton>
-          )}
-          {canStop && (
-            <CardButton busy={busy} submit={submit} action={{ kind: "stop", id: card.id }}>
-              <T>Stop now</T>
-            </CardButton>
-          )}
-          {active && card.runState === "paused" && (
-            <CardButton busy={busy} submit={submit} action={{ kind: "resume", id: card.id }}>
-              <T>Resume</T>
-            </CardButton>
-          )}
-          {card.waitingReason && (
-            <CardButton
-              busy={busy}
-              submit={submit}
-              action={{ kind: card.runNext ? "clear_run_next" : "run_next", id: card.id }}
-            >
-              {card.runNext ? gt("Clear run next") : gt("Run next")}
-            </CardButton>
-          )}
-          {active && card.runState === "running" && card.leadThreadId && (
-            <select
-              aria-label={gt("Move {title}", { title: card.title })}
-              className={selectClass}
-              disabled={busy}
-              value={card.column}
-              onChange={(event) => {
-                const column = PIPELINE_COLUMNS.find((stage) => stage === event.target.value);
-                if (column) void submit({ kind: "move", id: card.id, column });
-              }}
-            >
-              {PIPELINE_COLUMNS.filter((stage) => stage !== "backlog").map((stage) => (
-                <option key={stage} value={stage}>
-                  {PIPELINE_COLUMN_LABELS[stage]}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
+        {card.historical && card.column !== "done" && card.runState === "paused" && (
+          <CardButton busy={busy} submit={submit} action={{ kind: "resume", id: card.id }}>
+            {card.startRequested ? gt("Resume") : gt("Start")}
+          </CardButton>
+        )}
+        {!card.historical && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {card.pullRequest && (
+              <CardButton
+                busy={busy}
+                submit={submit}
+                action={{ kind: "refresh_github", id: card.id }}
+              >
+                <T>Refresh GitHub</T>
+              </CardButton>
+            )}
+            {active && card.pullRequest?.manualReviewPending && (
+              <CardButton busy={busy} submit={submit} action={{ kind: "send_review", id: card.id }}>
+                <T>Send to lead</T>
+              </CardButton>
+            )}
+            {!card.startRequested && (
+              <CardButton busy={busy} submit={submit} action={{ kind: "start", id: card.id }}>
+                <T>Start</T>
+              </CardButton>
+            )}
+            {card.runState === "running" && card.launchError && (
+              <CardButton busy={busy} submit={submit} action={{ kind: "retry", id: card.id }}>
+                <T>Retry</T>
+              </CardButton>
+            )}
+            {active && card.runState === "running" && (
+              <CardButton busy={busy} submit={submit} action={{ kind: "pause", id: card.id }}>
+                <T>Pause</T>
+              </CardButton>
+            )}
+            {canStop && (
+              <CardButton busy={busy} submit={submit} action={{ kind: "stop", id: card.id }}>
+                <T>Stop now</T>
+              </CardButton>
+            )}
+            {active && card.runState === "paused" && (
+              <CardButton busy={busy} submit={submit} action={{ kind: "resume", id: card.id }}>
+                <T>Resume</T>
+              </CardButton>
+            )}
+            {card.waitingReason && (
+              <CardButton
+                busy={busy}
+                submit={submit}
+                action={{ kind: card.runNext ? "clear_run_next" : "run_next", id: card.id }}
+              >
+                {card.runNext ? gt("Clear run next") : gt("Run next")}
+              </CardButton>
+            )}
+            {active && card.runState === "running" && card.leadThreadId && (
+              <select
+                aria-label={gt("Move {title}", { title: card.title })}
+                className={selectClass}
+                disabled={busy}
+                value={card.column}
+                onChange={(event) => {
+                  const column = PIPELINE_COLUMNS.find((stage) => stage === event.target.value);
+                  if (column) void submit({ kind: "move", id: card.id, column });
+                }}
+              >
+                {PIPELINE_COLUMNS.filter((stage) => stage !== "backlog").map((stage) => (
+                  <option key={stage} value={stage}>
+                    {PIPELINE_COLUMN_LABELS[stage]}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
       </details>
     </li>
   );

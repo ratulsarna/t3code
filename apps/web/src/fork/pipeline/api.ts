@@ -1,6 +1,12 @@
 import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
 import { executeConnectedEnvironmentHttpRequest } from "@t3tools/client-runtime/state/environmentHttpAuth";
-import { type EnvironmentId, PipelineFailure, type PipelineMutation } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  PipelineFailure,
+  type PipelineMutation,
+  type ProjectId,
+} from "@t3tools/contracts";
+import type { PipelineStatsRange } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { Atom, AtomRegistry } from "effect/reactivity";
 
@@ -39,7 +45,9 @@ function request<A, E, R extends never>(
     ),
   ).pipe(
     Effect.flatMap((response) =>
-      "error" in response ? Effect.fail(new PipelineFailure({ message: response.error })) : Effect.succeed(response.data),
+      "error" in response
+        ? Effect.fail(new PipelineFailure({ message: response.error }))
+        : Effect.succeed(response.data),
     ),
   );
 }
@@ -68,6 +76,46 @@ const projectQueries = Atom.family((key: string) => {
 
 export const pipelineProjectsAtom = (hub: EnvironmentId, hostId: EnvironmentId) =>
   projectQueries(JSON.stringify([hub, hostId]));
+
+const issueQueries = Atom.family((key: string) => {
+  const [hub, hostId, projectId] = JSON.parse(key) as [EnvironmentId, EnvironmentId, ProjectId];
+  const query = { hostId, projectId };
+  return connectionAtomRuntime.atom(
+    request(hub, {
+      method: "GET",
+      url: (urls) => urls.issues({ query }),
+      request: ({ client, headers }) => recoverConflict(client.issues({ headers, query })),
+    }),
+  );
+});
+export const pipelineIssuesAtom = (
+  hub: EnvironmentId,
+  hostId: EnvironmentId,
+  projectId: ProjectId,
+) => issueQueries(JSON.stringify([hub, hostId, projectId]));
+
+const statsQueries = Atom.family((key: string) => {
+  const [hub, hostId, projectId, range] = JSON.parse(key) as [
+    EnvironmentId,
+    EnvironmentId,
+    ProjectId,
+    PipelineStatsRange,
+  ];
+  const query = { hostId, projectId, range };
+  return connectionAtomRuntime.atom(
+    request(hub, {
+      method: "GET",
+      url: (urls) => urls.stats({ query }),
+      request: ({ client, headers }) => recoverConflict(client.stats({ headers, query })),
+    }),
+  );
+});
+export const pipelineStatsAtom = (
+  hub: EnvironmentId,
+  hostId: EnvironmentId,
+  projectId: ProjectId,
+  range: PipelineStatsRange,
+) => statsQueries(JSON.stringify([hub, hostId, projectId, range]));
 
 export const mutate = (hub: EnvironmentId, payload: PipelineMutation) => {
   const operation = request(hub, {

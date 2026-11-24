@@ -1,3 +1,4 @@
+import { importedLaunchId } from "../../../fork/pipeline/worktree.ts";
 import {
   CommandId,
   MessageId,
@@ -179,12 +180,14 @@ const defaultWorktreeStrategy = Effect.fn("mcp.defaultWorktreeStrategy")(functio
 const launchCommandId = Effect.fn("mcp.launchCommandId")(function* (
   namespace: string,
   key: string,
+  linked: boolean,
 ) {
   const crypto = yield* Digest.Digest;
   // @effect-diagnostics-next-line globalJsonInEffect:off - a JSON pair keeps the caller apart from the key.
   const bytes = new TextEncoder().encode(JSON.stringify([namespace, key]));
   const digest = yield* crypto.digest(Digest.sha256, bytes).pipe(Effect.mapError(unavailable));
-  return CommandId.make(`mcp:launch:${Hex.encode(digest)}`);
+  const hash = Hex.encode(digest);
+  return CommandId.make((linked ? importedLaunchId(key, hash) : null) ?? `mcp:launch:${hash}`);
 });
 
 const access = Effect.gen(function* () {
@@ -230,7 +233,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         const commandId =
           input.clientRequestId === undefined
             ? yield* newCommandId()
-            : yield* launchCommandId(scope.requestNamespace, input.clientRequestId);
+            : yield* launchCommandId(
+                scope.requestNamespace,
+                input.clientRequestId,
+                linkOrigin !== undefined,
+              );
         const threadId = ThreadId.make(commandId);
         const messageId = MessageId.make(commandId);
         const attachments = input.attachments ?? [];

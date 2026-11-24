@@ -91,6 +91,7 @@ import { modelSwitchSince } from "./modelSwitch.ts";
 import { contextBoundaryOrdinal, isScheduledFreshRun } from "./contextBoundary.ts";
 import { isPlaceholderThreadTitle } from "./placeholderThreadTitle.ts";
 import { combinePullRequestWatchWakes, type PullRequestWatchWake } from "./pullRequestWatch.ts";
+import { isPipelineWorktree } from "../fork/pipeline/worktree.ts";
 import { outputRequestProblem } from "./runOutput.ts";
 import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
 import { isSlashCommand } from "@t3tools/shared/composerTrigger";
@@ -4526,6 +4527,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandId: command.commandId,
         commandType: command.type,
         cause: `Thread ${command.threadId} is settled or archived and cannot watch pull requests.`,
+      });
+    }
+    if (
+      command.type === "thread.pull-request.watch" &&
+      command.watching &&
+      isPipelineWorktree(thread)
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Pipeline owns review follow-ups for this worktree.",
       });
     }
     // Child tasks report to their parent, which owns PR monitoring; child watches would cause unrelated wakes.

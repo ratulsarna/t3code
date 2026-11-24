@@ -9,7 +9,10 @@ import {
   type PipelineNewCard,
   type PipelineReport,
 } from "@t3tools/contracts";
-import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId, type PipelineColumn } from "@t3tools/contracts";
+import { normalizePullRequestUrl } from "./github.ts";
+import type { GithubSyncState } from "./github-types.ts";
+import type { GithubIssueDetails } from "./issue-types.ts";
 
 const migrations = [
   `CREATE TABLE cards (
@@ -42,10 +45,28 @@ const migrations = [
      card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
      PRIMARY KEY(project_id, host_id)
    ) STRICT;`,
+  `ALTER TABLE cards ADD COLUMN github_repository TEXT;
+   ALTER TABLE cards ADD COLUMN issue_url TEXT;
+   ALTER TABLE cards ADD COLUMN issue_snapshot TEXT;
+   ALTER TABLE cards ADD COLUMN review_ready INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE cards ADD COLUMN pr_url TEXT;
+   ALTER TABLE cards ADD COLUMN github_state TEXT;
+   ALTER TABLE cards ADD COLUMN retired INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE cards ADD COLUMN historical INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE cards ADD COLUMN lead_environment_id TEXT;
+   ALTER TABLE cards ADD COLUMN import_branch TEXT;
+   ALTER TABLE cards ADD COLUMN issue_refreshed INTEGER NOT NULL DEFAULT 0;
+   CREATE UNIQUE INDEX cards_issue ON cards(project_id, host_id, lower(issue_url)) WHERE issue_url IS NOT NULL AND (historical = 0 OR github_repository IS NOT NULL);
+   CREATE TABLE legacy_cards (card_id TEXT PRIMARY KEY REFERENCES cards(id), source_id TEXT NOT NULL UNIQUE, record TEXT NOT NULL, resume_target TEXT);
+   CREATE TABLE review_records (card_id TEXT PRIMARY KEY REFERENCES cards(id), record TEXT NOT NULL, warnings TEXT NOT NULL);
+   CREATE TABLE reviewer_models (id INTEGER PRIMARY KEY CHECK(id = 1), config TEXT NOT NULL);
+   CREATE TABLE pipeline_settings (id INTEGER PRIMARY KEY CHECK(id = 1), lead_selection TEXT NOT NULL);
+   CREATE TABLE imported_thread_links (card_id TEXT REFERENCES cards(id), thread_id TEXT NOT NULL,
+     PRIMARY KEY(card_id, thread_id));`,
 ];
 
 type Operation = "launch" | "pause" | "stop" | "resume";
-interface CardRow {
+export interface CardRow {
   id: string;
   project_id: string;
   host_id: string;
@@ -70,7 +91,43 @@ interface CardRow {
   operation_id: string | null;
   link_identity: string | null;
   revision: number;
+  issue_url: string | null;
+  github_repository: string | null;
+  issue_snapshot: string | null;
+  review_ready: number;
+  pr_url: string | null;
+  github_state: string | null;
+  retired: number;
+  historical: number;
+  import_branch: string | null;
+  lead_environment_id: string | null;
+  issue_refreshed: number;
 }
+
+export interface CardHistory {
+  id: number;
+  cardId: string;
+  at: number;
+  kind: string;
+  fromColumn: PipelineColumn | null;
+  toColumn: PipelineColumn | null;
+  source: string;
+  threadId: string | null;
+  note: string | null;
+}
+
+export const githubState = (row: CardRow): GithubSyncState | null =>
+  row.github_state === null ? null : (JSON.parse(row.github_state) as GithubSyncState);
+export const issueSnapshot = (row: CardRow): GithubIssueDetails | null =>
+  row.issue_snapshot === null ? null : (JSON.parse(row.issue_snapshot) as GithubIssueDetails);
+
+export interface ImportTarget {
+  repository?: string | undefined;
+  branch?: string | undefined;
+  hostId?: string | undefined;
+  projectId?: string | undefined;
+}
+
 type Snapshot = { snapshot: string; report_token: string; callback_origin: string };
 type InternalPatch = Partial<
   Pick<
@@ -79,6 +136,7 @@ type InternalPatch = Partial<
     | "run_state"
     | "start_requested"
     | "lead_thread_id"
+    | "lead_execution"
     | "attention_reason"
     | "result"
     | "launch_error"
@@ -88,6 +146,14 @@ type InternalPatch = Partial<
     | "operation"
     | "operation_id"
     | "link_identity"
+    | "review_ready"
+    | "pr_url"
+    | "github_state"
+    | "retired"
+    | "issue_snapshot"
+    | "issue_refreshed"
+    | "lead_environment_id"
+    | "historical"
   >
 >;
 
@@ -96,6 +162,8 @@ const fail = (message: string): never => {
 };
 
 function publicCard(row: CardRow, waitingReason: string | null, runNext: boolean): PipelineCard {
+  const github = githubState(row);
+  const status = github?.status;
   return {
     id: row.id,
     projectId: ProjectId.make(row.project_id),
@@ -110,6 +178,30 @@ function publicCard(row: CardRow, waitingReason: string | null, runNext: boolean
     runState: row.run_state,
     startRequested: row.start_requested === 1,
     leadThreadId: row.lead_thread_id === null ? null : ThreadId.make(row.lead_thread_id),
+    leadEnvironmentId:
+      row.lead_environment_id === null ? null : EnvironmentId.make(row.lead_environment_id),
+    historical: row.historical === 1,
+    issueUrl: row.issue_url,
+    pullRequest:
+      status === undefined
+        ? null
+        : {
+            url: status.url,
+            state: status.state,
+            draft: status.draft,
+            headSha: status.headSha,
+            checks: status.checks,
+            review: status.review,
+            batchId: status.batchId,
+            error: status.error,
+            pendingFeedback: status.manualReviewPending
+              ? (github?.batch?.feedback ?? []).map(({ id, author, url }) => ({ id, author, url }))
+              : [],
+            ...(status.manualReviewPending === undefined
+              ? {}
+              : { manualReviewPending: status.manualReviewPending }),
+          },
+    worktreeRetired: row.retired === 1,
     attentionReason: row.attention_reason,
     result: row.result,
     launchError: row.launch_error,
@@ -155,7 +247,13 @@ export function createCardStore(db: NodeSqlite.DatabaseSync, now = Date.now) {
     (db.prepare("SELECT * FROM cards WHERE id = ?").get(id) as unknown as CardRow | undefined) ??
     null;
   const required = (id: string) => get(id) ?? fail("Card not found.");
-  const addHistory = (card: CardRow, kind: string, source: string, before?: CardRow) =>
+  const addHistory = (
+    card: CardRow,
+    kind: string,
+    source: string,
+    before?: CardRow,
+    note?: string,
+  ) =>
     db
       .prepare(`INSERT INTO card_history (card_id, at, kind, source, from_column, to_column, thread_id, note)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -167,20 +265,28 @@ export function createCardStore(db: NodeSqlite.DatabaseSync, now = Date.now) {
         before?.column ?? null,
         card.column,
         card.lead_thread_id,
-        card.attention_reason ?? card.launch_error ?? card.control_error,
+        note ?? card.attention_reason ?? card.launch_error ?? card.control_error,
       );
 
-  function update(card: CardRow, patch: InternalPatch, kind?: string, source = "system") {
+  function update(
+    card: CardRow,
+    patch: InternalPatch,
+    kind?: string,
+    source = "system",
+    note?: string,
+  ) {
     const next = { ...card, ...patch };
     db.prepare(`UPDATE cards SET
-      "column" = ?, run_state = ?, start_requested = ?, lead_thread_id = ?, attention_reason = ?,
+      "column" = ?, run_state = ?, start_requested = ?, lead_thread_id = ?, lead_execution = ?, attention_reason = ?,
       result = ?, launch_error = ?, control_error = ?, queued_at = ?, occupies_slot = ?,
-      operation = ?, operation_id = ?, link_identity = ?, updated_at = ?, revision = revision + 1
+      operation = ?, operation_id = ?, link_identity = ?, review_ready = ?, pr_url = ?, github_state = ?,
+      retired = ?, issue_snapshot = ?, issue_refreshed = ?, lead_environment_id = ?, historical = ?, updated_at = ?, revision = revision + 1
       WHERE id = ?`).run(
       next.column,
       next.run_state,
       next.start_requested,
       next.lead_thread_id,
+      next.lead_execution,
       next.attention_reason,
       next.result,
       next.launch_error,
@@ -190,13 +296,21 @@ export function createCardStore(db: NodeSqlite.DatabaseSync, now = Date.now) {
       next.operation,
       next.operation_id,
       next.link_identity,
+      next.review_ready,
+      next.pr_url,
+      next.github_state,
+      next.retired,
+      next.issue_snapshot,
+      next.issue_refreshed,
+      next.lead_environment_id,
+      next.historical,
       now(),
       next.id,
     );
     if (next.run_state !== "running" || next.column === "done" || next.occupies_slot === 1) {
       db.prepare("DELETE FROM run_next WHERE card_id = ?").run(next.id);
     }
-    if (kind) addHistory(next, kind, source, card);
+    if (kind) addHistory(next, kind, source, card, note);
   }
 
   const limitFor = (card: CardRow) =>
@@ -244,12 +358,26 @@ export function createCardStore(db: NodeSqlite.DatabaseSync, now = Date.now) {
     );
   }
 
-  function create(input: PipelineNewCard, instructions: string, origin: string) {
+  function create(
+    input: PipelineNewCard,
+    instructions: string,
+    origin: string,
+    issue: GithubIssueDetails | null,
+    repository: string | null,
+  ) {
+    if (issue !== null) {
+      const existing = db
+        .prepare(
+          `SELECT id FROM cards WHERE project_id = ? AND host_id = ? AND lower(issue_url) = lower(?) AND (historical = 0 OR github_repository IS NOT NULL)`,
+        )
+        .get(input.projectId, input.hostId, issue.url);
+      if (existing) return String(existing.id);
+    }
     const id = NodeCrypto.randomUUID();
     const at = now();
     db.prepare(`INSERT INTO cards (id, project_id, host_id, title, body, base_ref, lead_execution,
-      mode, size, shape_review, "column", run_state, start_requested, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'backlog', 'running', 0, ?, ?)`).run(
+      mode, size, shape_review, "column", run_state, start_requested, created_at, updated_at, issue_url, issue_snapshot, github_repository)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'backlog', 'running', 0, ?, ?, ?, ?, ?)`).run(
       id,
       input.projectId,
       input.hostId,
@@ -262,6 +390,9 @@ export function createCardStore(db: NodeSqlite.DatabaseSync, now = Date.now) {
       input.shapeReview ? 1 : 0,
       at,
       at,
+      issue?.url ?? null,
+      issue === null ? null : JSON.stringify(issue),
+      repository,
     );
     const card = required(id);
     addHistory(card, "created", "user");
@@ -318,6 +449,10 @@ export function createCardStore(db: NodeSqlite.DatabaseSync, now = Date.now) {
   return {
     get,
     snapshot,
+    leadDefault() {
+      const row = db.prepare("SELECT lead_selection FROM pipeline_settings WHERE id = 1").get();
+      return typeof row?.lead_selection === "string" ? row.lead_selection : null;
+    },
     cards() {
       const rows = db
         .prepare("SELECT * FROM cards ORDER BY updated_at DESC, id")
@@ -350,9 +485,65 @@ export function createCardStore(db: NodeSqlite.DatabaseSync, now = Date.now) {
           limit: Number(row.task_limit),
         }));
     },
-    mutate(action: PipelineMutation, instructions: string, origin: string) {
+    importTarget(id: string): ImportTarget {
+      const row = db.prepare("SELECT resume_target FROM legacy_cards WHERE card_id = ?").get(id);
+      return typeof row?.resume_target === "string"
+        ? (JSON.parse(row.resume_target) as ImportTarget)
+        : {};
+    },
+    resumeImported(
+      id: string,
+      target: {
+        hostId: EnvironmentId;
+        projectId: ProjectId;
+        repository: string;
+        branch: string | null;
+      },
+      instructions: string,
+      origin: string,
+    ) {
       return transaction(() => {
-        if (action.kind === "create") return create(action.card, instructions, origin);
+        const card = required(id);
+        if (!card.historical || card.column === "done")
+          fail("Only an active imported card can resume.");
+        if (card.operation !== null) return id;
+        const duplicate =
+          card.issue_url &&
+          db
+            .prepare(`SELECT 1 FROM cards
+          WHERE id <> ? AND project_id = ? AND host_id = ? AND lower(issue_url) = lower(?)`)
+            .get(id, target.projectId, target.hostId, card.issue_url);
+        if (duplicate) fail("This issue already has a card on the destination checkout.");
+        if (card.lead_thread_id) addHistory(card, "imported_lead", "migration");
+        pinInstructions(id, instructions, origin);
+        db.prepare("UPDATE instruction_snapshots SET callback_origin = ? WHERE card_id = ?").run(
+          origin,
+          id,
+        );
+        db.prepare(`UPDATE cards SET host_id = ?, project_id = ?, github_repository = ?, base_ref = ?,
+          import_branch = ?, link_identity = NULL, lead_thread_id = NULL, lead_environment_id = NULL
+          WHERE id = ?`).run(
+          target.hostId,
+          target.projectId,
+          target.repository,
+          target.branch === null ? "HEAD" : `origin/${target.branch}`,
+          target.branch,
+          id,
+        );
+        queue(required(id), "resume_requested");
+        return id;
+      });
+    },
+    mutate(
+      action: PipelineMutation,
+      instructions: string,
+      origin: string,
+      issue: GithubIssueDetails | null = null,
+      repository: string | null = null,
+    ) {
+      return transaction(() => {
+        if (action.kind === "create")
+          return create(action.card, instructions, origin, issue, repository);
         if (action.kind === "limit") {
           db.prepare(`INSERT INTO task_limits VALUES (?, ?, ?)
             ON CONFLICT (project_id, host_id) DO UPDATE SET task_limit = excluded.task_limit`).run(
@@ -363,7 +554,19 @@ export function createCardStore(db: NodeSqlite.DatabaseSync, now = Date.now) {
           return null;
         }
         const card = required(action.id);
+        if (card.historical) fail("Imported cards are held.");
         switch (action.kind) {
+          case "send_review": {
+            const state = githubState(card);
+            if (!state?.batch || state.batch.state !== "pending")
+              fail("There is no pending review batch.");
+            state!.batch!.manualDispatch = true;
+            state!.status.manualReviewPending = false;
+            update(card, { github_state: JSON.stringify(state) });
+            break;
+          }
+          case "refresh_github":
+            break;
           case "start":
             if (card.start_requested) break;
             pinInstructions(card.id, instructions, origin);
@@ -428,6 +631,60 @@ export function createCardStore(db: NodeSqlite.DatabaseSync, now = Date.now) {
     report(id: string, report: PipelineReport) {
       transaction(() => {
         const card = required(id);
+        if (card.historical) fail("Imported cards are held.");
+        if (report.kind === "pull_request") {
+          const url = normalizePullRequestUrl(report.url);
+          if (
+            url === null ||
+            !card.github_repository ||
+            !url
+              .toLowerCase()
+              .startsWith(`https://github.com/${card.github_repository.toLowerCase()}/pull/`)
+          ) {
+            fail("The PR must belong to this card’s GitHub repository.");
+          }
+          if (!card.occupies_slot || card.run_state !== "running" || card.column === "done")
+            fail("The card is held.");
+          if (card.pr_url !== url)
+            update(
+              card,
+              { pr_url: url, github_state: null, review_ready: 0, column: "pr" },
+              "pr_linked",
+              "lead",
+              url ?? undefined,
+            );
+          return;
+        }
+        if (report.kind === "review_wait") {
+          if (!card.pr_url || card.run_state !== "running" || card.column === "done")
+            fail("Link the PR before handing off review.");
+          const state = githubState(card);
+          if (report.handled && state?.batch?.id !== report.handled)
+            fail("This review batch is no longer current.");
+          if (report.handled && state?.batch) {
+            if (state.batch.state === "handled") return;
+            if (state.batch.state !== "sending" && state.batch.state !== "delivered")
+              fail("This review batch has not been delivered.");
+            if (state.batch.state === "sending")
+              addHistory(card, "review_delivered", "github", card, state.batch.id);
+            state.batch.state = "handled";
+            state.status.followup = "handled";
+            state.status.review =
+              state.batch.headSha === state.status.headSha ? "clear" : "waiting";
+          }
+          update(
+            card,
+            {
+              review_ready: 1,
+              attention_reason: null,
+              github_state: state === null ? null : JSON.stringify(state),
+            },
+            report.handled ? "review_handled" : "review_waiting",
+            "lead",
+            report.handled,
+          );
+          return;
+        }
         if (report.kind === "paused") {
           if (
             card.operation_id !== report.requestId ||
@@ -461,10 +718,40 @@ export function createCardStore(db: NodeSqlite.DatabaseSync, now = Date.now) {
             ...(report.needsYou === undefined ? {} : { attention_reason: report.needsYou }),
             ...(report.result === undefined ? {} : { result: report.result }),
           },
-          "report",
+          report.needsYou === undefined ? "report" : "attention",
           "lead",
+          report.needsYou === undefined ? undefined : (report.needsYou ?? "cleared"),
         );
       });
+    },
+    githubCards() {
+      return db
+        .prepare(`SELECT * FROM cards WHERE pr_url IS NOT NULL AND historical = 0
+        AND (retired = 0 OR "column" <> 'done') ORDER BY updated_at`)
+        .all() as unknown as CardRow[];
+    },
+    updateGithub(
+      id: string,
+      url: string,
+      patch: (card: CardRow) => InternalPatch | undefined,
+      kind?: string,
+      note?: string,
+    ) {
+      return transaction(() => {
+        const card = required(id);
+        if (card.pr_url !== url || card.historical) return false;
+        const changes = patch(card);
+        if (changes === undefined) return false;
+        update(card, changes, kind, "github", note);
+        return true;
+      });
+    },
+    history(projectId: ProjectId, hostId: EnvironmentId) {
+      return db
+        .prepare(`SELECT h.id, h.card_id AS cardId, h.at, h.kind, h.source, h.from_column AS fromColumn,
+        h.to_column AS toColumn, h.thread_id AS threadId, h.note FROM card_history h
+        JOIN cards c ON c.id = h.card_id WHERE c.project_id = ? AND c.host_id = ? ORDER BY h.at, h.id`)
+        .all(projectId, hostId) as unknown as CardHistory[];
     },
     claim() {
       return transaction(() => {

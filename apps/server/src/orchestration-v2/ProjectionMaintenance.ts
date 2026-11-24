@@ -1,3 +1,6 @@
+import { ServerConfig } from "../config.ts";
+import { encodePruneCursors, readBotsConfig } from "../fork/bots/config.ts";
+import * as Option from "effect/Option";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -54,6 +57,8 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
   ProjectionMaintenanceV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const config = yield* Effect.serviceOption(ServerConfig);
+    const bots = Option.isSome(config) ? readBotsConfig(config.value.stateDir).bots : [];
 
     const writeMetadata = (name: string, sequence: number, at: DateTime.Utc) => sql`
       INSERT INTO orchestration_v2_projection_metadata (
@@ -100,6 +105,7 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
       betweenPages: Effect.Effect<void>,
     ) {
       const referenced = yield* readPromptReferences(throughSequence, head, betweenPages);
+      const botCursors = encodePruneCursors(bots);
       // Stream heads at or below the boundary are kept, so the anchors they borrow must stay too.
       const keptHeadReferences = yield* sql<{ readonly prompt_sequence: number }>`
         SELECT json_extract(event.payload_json, '$.promptSequence') AS prompt_sequence
@@ -125,6 +131,17 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
               WHEN event.application_event_version = 1 THEN 0
               -- The legacy importer treats a thread without thread.created as not yet imported.
               WHEN event.event_type = 'thread.created' THEN 0
+              ${
+                bots.length === 0
+                  ? sql``
+                  : sql`
+                WHEN event.aggregate_kind = 'thread' AND EXISTS (
+                  SELECT 1 FROM json_each(${botCursors}) AS bot
+                  WHERE json_extract(bot.value, '$[0]') = event.stream_id
+                    AND event.sequence > json_extract(bot.value, '$[1]')
+                ) THEN 0
+              `
+              }
               -- Codex usage history reads the selection a run attempt started with.
               WHEN event.event_type = 'run.updated'
                 AND json_extract(event.payload_json, '$.status') = 'running' THEN 0

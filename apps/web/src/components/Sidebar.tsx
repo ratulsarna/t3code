@@ -1,3 +1,4 @@
+import { BotsSection } from "../fork/bots/BotsSection";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { msg, T, useGT, useMessages } from "gt-react";
 import { m } from "../i18n/messages";
@@ -3327,6 +3328,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         }
       >
         <SidebarGroup className="flex-1" role="presentation">
+          {!isSearchingThreads && (
+            <BotsSection
+              configs={serverConfigs}
+              activeThreadKey={routeThreadKey}
+              openThread={navigateToThread}
+            />
+          )}
           {isSearchingThreads ? (
             threadSearchResults.length > 0 ? (
               <TooltipProvider

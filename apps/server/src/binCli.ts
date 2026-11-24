@@ -1,3 +1,4 @@
+import { botsCommand } from "./fork/bots/cli.ts";
 import { bbHistoryCommand } from "./fork/history/cli.ts";
 import { doctorCommand } from "./cli/doctor.ts";
 import { policyCommand } from "./cli/policy.ts";
@@ -110,6 +111,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       ),
       claudeHistoryCommand,
       bbHistoryCommand,
+      botsCommand,
       speechWorkerCommand,
       sshHelperCommand,
 

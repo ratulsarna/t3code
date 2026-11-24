@@ -19,6 +19,7 @@ import { vi } from "vite-plus/test";
 import { makeCli } from "../binCli.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { FEEDBACK_OFF_MESSAGE, T3_CLI_COMMANDS } from "../feedback/FeedbackReport.ts";
+import { forkCommands } from "../fork/cli.ts";
 import * as McpBridge from "../mcp/AcpMcpStdioBridge.ts";
 import {
   makePersistedServerRuntimeState,
@@ -44,14 +45,16 @@ vi.mock("../auth/EnvironmentAuth.ts", async (importOriginal) => {
 
 const listedPaths = (command: Command.Command.Any, path: string): ReadonlyArray<string> => [
   path,
-  ...command.subcommands.flatMap((group) =>
-    group.commands
-      .filter((child) => !child.unlisted)
-      .flatMap((child) => listedPaths(child, `${path} ${child.name}`)),
-  ),
+  ...command.subcommands
+    .filter((group) => group.group !== forkCommands.group)
+    .flatMap((group) =>
+      group.commands
+        .filter((child) => !child.unlisted)
+        .flatMap((child) => listedPaths(child, `${path} ${child.name}`)),
+    ),
 ];
 
-it("feedback subjects name every listed t3 command", () => {
+it("upstream feedback subjects name every listed upstream t3 command", () => {
   expect([...T3_CLI_COMMANDS].sort()).toEqual(
     [...listedPaths(makeCli({ cloudEnabled: true }), "t3")].sort(),
   );

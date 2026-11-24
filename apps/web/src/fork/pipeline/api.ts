@@ -1,6 +1,6 @@
 import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
 import { executeConnectedEnvironmentHttpRequest } from "@t3tools/client-runtime/state/environmentHttpAuth";
-import { type EnvironmentId, type PipelineMutation } from "@t3tools/contracts";
+import { type EnvironmentId, PipelineFailure, type PipelineMutation } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { Atom, AtomRegistry } from "effect/reactivity";
 
@@ -39,7 +39,7 @@ function request<A, E, R extends never>(
     ),
   ).pipe(
     Effect.flatMap((response) =>
-      "error" in response ? Effect.fail(new Error(response.error)) : Effect.succeed(response.data),
+      "error" in response ? Effect.fail(new PipelineFailure({ message: response.error })) : Effect.succeed(response.data),
     ),
   );
 }

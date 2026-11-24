@@ -331,8 +331,6 @@ export const isRelayTracingEnabled = (env: Readonly<Record<string, string | unde
     Effect.runSync,
   );
 
-export const outboundTelemetryEnabled = false;
-
 export type SignalName = "traces" | "metrics" | "logs";
 
 export interface SignalEndpoint {
@@ -349,7 +347,7 @@ export const resolveSignalEndpoint = (
   t3: { readonly url: string | undefined; readonly export: SignalExport },
   fallback: { readonly bootstrapUrl: string | undefined; readonly settingsUrl: string | undefined },
 ): SignalEndpoint | undefined => {
-  if (!outboundTelemetryEnabled || otel.disabled) {
+  if (otel.disabled) {
     return undefined;
   }
   const t3Url = blankAsUnset(t3.url);

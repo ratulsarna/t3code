@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { EnvironmentAuthInvalidError } from "@t3tools/contracts";
+import { hashTelemetryId } from "@t3tools/shared/telemetryId";
 import {
   bootstrapRemoteBearerSession,
   exchangeRemoteDpopAccessToken,
@@ -313,7 +314,7 @@ describe("remote environment authorization", () => {
     }),
   );
 
-  it.effect("keeps analytics identity off the authenticated socket", () =>
+  it.effect("names the signed-in Connect account and this device by hash only", () =>
     Effect.gen(function* () {
       const fetch = recordedFetch(
         Response.json({ ticket: "ws-ticket", expiresAt: "2026-05-01T12:05:00.000Z" }),
@@ -339,9 +340,8 @@ describe("remote environment authorization", () => {
         ),
       );
 
-      expect(url.searchParams.get("wsTicket")).toBe("ws-ticket");
-      expect(url.searchParams.has("clientOwner")).toBe(false);
-      expect(url.searchParams.has("clientDevice")).toBe(false);
+      expect(url.searchParams.get("clientOwner")).toBe(hashTelemetryId("user_connect"));
+      expect(url.searchParams.get("clientDevice")).toBe(hashTelemetryId("device-1"));
       expect(url.toString()).not.toContain("user_connect");
       expect(url.toString()).not.toContain("device-1");
     }),

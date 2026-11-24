@@ -1,4 +1,3 @@
-import { outboundTelemetryEnabled } from "@t3tools/shared/otelEnvironment";
 import type {
   OtlpEndpointCheckInput,
   OtlpEndpointCheckResult,
@@ -52,7 +51,6 @@ const make = Effect.gen(function* () {
     signal,
     url,
   }: OtlpEndpointCheckInput) {
-    if (!outboundTelemetryEnabled) return { _tag: "Unreachable", timedOut: false } as const;
     const { url: runningUrl, export: signalExport } = running[signal];
     const headers = url === runningUrl ? signalExport.headers : undefined;
     const body = yield* Effect.gen(function* () {

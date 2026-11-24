@@ -10,7 +10,6 @@ import * as Schema from "effect/Schema";
 
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { outboundTelemetryEnabled } from "@t3tools/shared/otelEnvironment";
 import { hashTelemetryId } from "@t3tools/shared/telemetryId";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { CLOUD_LINKED_USER_ID } from "../cloud/config.ts";
@@ -339,6 +338,4 @@ export const getServerOwnersForHome = Effect.fn("getServerOwnersForHome")(functi
   );
 });
 
-export const getServerOwners = outboundTelemetryEnabled
-  ? Effect.flatMap(HostProcess.HomeDirectory, getServerOwnersForHome)
-  : Effect.succeed<ReadonlyArray<TelemetryOwner>>([]);
+export const getServerOwners = Effect.flatMap(HostProcess.HomeDirectory, getServerOwnersForHome);

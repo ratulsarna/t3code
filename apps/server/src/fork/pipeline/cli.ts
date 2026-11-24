@@ -11,7 +11,9 @@ const importCommand = Command.make("import-bb", {
   resumeTargets: Argument.String("resume-targets-json").pipe(Argument.optional),
   leadSettings: Argument.String("bb-lead-settings-json").pipe(Argument.optional),
 }).pipe(
-  Command.withDescription("Import Pipeline cards from an offline bb snapshot into a stopped T3 home's database."),
+  Command.withDescription(
+    "Import Pipeline cards from an offline bb snapshot into a stopped T3 home's database.",
+  ),
   Command.withHandler(
     Effect.fn(function* ({ snapshot, target, historyHome, models, resumeTargets, leadSettings }) {
       const { importBbPipeline } = yield* Effect.promise(() => import("./importBb.ts"));

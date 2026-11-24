@@ -50,7 +50,9 @@ test("adopts both worker databases once and keeps the old script ledger availabl
       migrateForkDatabase(db);
       expect(db.prepare("SELECT status FROM script_runs").all()).toEqual([{ status: "skipped" }]);
       using legacy = new NodeSqlite.DatabaseSync(source, { readOnly: true });
-      expect(legacy.prepare("SELECT status FROM script_runs").all()).toEqual([{ status: "running" }]);
+      expect(legacy.prepare("SELECT status FROM script_runs").all()).toEqual([
+        { status: "running" },
+      ]);
     }
   } finally {
     NodeFS.rmSync(root, { recursive: true, force: true });

@@ -28,8 +28,10 @@ const migrations = [
 ] as const;
 
 function hasTable(db: NodeSqlite.DatabaseSync, table: string) {
-  return db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?").get(table) !==
-    undefined;
+  return (
+    db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?").get(table) !==
+    undefined
+  );
 }
 
 export function migrateForkDatabase(db: NodeSqlite.DatabaseSync): void {
@@ -41,7 +43,8 @@ export function migrateForkDatabase(db: NodeSqlite.DatabaseSync): void {
       : null;
   const automationSchemaRecorded =
     hasTable(db, "fork_migrations") &&
-    db.prepare("SELECT 1 FROM fork_migrations WHERE name = 'script_automations'").get() !== undefined;
+    db.prepare("SELECT 1 FROM fork_migrations WHERE name = 'script_automations'").get() !==
+      undefined;
   const hasLegacyAutomations =
     !automationSchemaRecorded && legacyPath !== null && NodeFS.existsSync(legacyPath);
   if (hasLegacyAutomations) {
@@ -57,7 +60,10 @@ export function migrateForkDatabase(db: NodeSqlite.DatabaseSync): void {
       const record = db.prepare("INSERT INTO fork_migrations (migration_id, name) VALUES (?, ?)");
       if (hasTable(db, "pipeline_migrations")) {
         const legacy = db.prepare("SELECT version FROM pipeline_migrations ORDER BY version").all();
-        if (legacy.length > pipelineSchema.length || legacy.some((row, i) => row.version !== i + 1)) {
+        if (
+          legacy.length > pipelineSchema.length ||
+          legacy.some((row, i) => row.version !== i + 1)
+        ) {
           throw new Error("Invalid Pipeline migration ledger.");
         }
         for (const [i] of legacy.entries()) record.run(i + 1, migrations[i]![0]);

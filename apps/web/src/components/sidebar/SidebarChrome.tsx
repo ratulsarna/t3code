@@ -1,9 +1,4 @@
-import {
-  ArrowLeftIcon,
-  ArrowRightIcon,
-  ChartNoAxesColumnIcon,
-  SettingsIcon,
-} from "lucide-react";
+import { ArrowLeftIcon, ArrowRightIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { T, useGT } from "gt-react";
 import { memo } from "react";
@@ -232,7 +227,9 @@ export function SidebarUtilityItem({
 
 const SidebarUtilityMenu = memo(function SidebarUtilityMenu({
   utilityItem,
-}: { utilityItem?: ReactNode }) {
+}: {
+  utilityItem?: ReactNode;
+}) {
   const navigate = useNavigate();
   const navigateToMainApp = useNavigateToMainApp();
   const gt = useGT();
@@ -323,7 +320,9 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu({
 
 export const SidebarChromeFooter = memo(function SidebarChromeFooter({
   utilityItem,
-}: { utilityItem?: ReactNode }) {
+}: {
+  utilityItem?: ReactNode;
+}) {
   return (
     <SidebarFooter>
       <SidebarProviderUpdatePill />

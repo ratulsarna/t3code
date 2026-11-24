@@ -1,4 +1,5 @@
 // T3 ingest retains events and forwards to PostHog; UUIDs deduplicate retries there.
+import { outboundTelemetryEnabled } from "@t3tools/shared/otelEnvironment";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type { ClientOs } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -363,4 +364,10 @@ export const make = Effect.gen(function* () {
   return AnalyticsService.of({ record, flush, recordOwners });
 });
 
-export const layer = Layer.effect(AnalyticsService, make);
+export const layer = outboundTelemetryEnabled
+  ? Layer.effect(AnalyticsService, make)
+  : Layer.succeed(AnalyticsService, {
+      record: Effect.fn("AnalyticsService.record")(() => Effect.succeed(false)),
+      flush: Effect.void,
+      recordOwners: Effect.fn("AnalyticsService.recordOwners")(() => Effect.void),
+    });

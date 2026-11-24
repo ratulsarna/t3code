@@ -255,85 +255,27 @@ describe("OtelEnvironment", () => {
       protocol: "http/protobuf",
       headers: { "x-key": "otel" },
     });
-    it.each([
-      {
-        name: "T3CODE_OTLP_*_URL wins over a signal the OTEL variables turned off",
-        otel: withLogs(OtelEnvironment.OtelSignal.Off()),
-        t3Url: "http://t3:4318/v1/logs",
-        expected: {
-          url: "http://t3:4318/v1/logs",
-          export: t3Export,
-          source: "environment" as const,
-          variable: "T3CODE_OTLP_LOGS_URL",
-        },
-      },
-      {
-        name: "an OTEL endpoint brings its headers and protocol over the fallback",
-        otel: withLogs(otelExport),
-        t3Url: " ",
-        expected: {
-          url: "http://otel:4318/v1/logs",
-          export: {
-            protocol: "http/protobuf" as const,
-            headers: { "x-key": "otel" },
-            exportIntervalMs: 5_000,
-          },
-          source: "environment" as const,
-          variable: "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
-        },
-      },
-      {
-        name: "a signal the OTEL variables turned off does not fall through",
-        otel: withLogs(OtelEnvironment.OtelSignal.Off()),
-        t3Url: undefined,
-        expected: undefined,
-      },
-      {
-        name: "an unset signal takes the first non-blank fallback",
-        otel: withLogs(OtelEnvironment.OtelSignal.Unset()),
-        t3Url: undefined,
-        expected: {
-          url: "http://settings:4318/v1/logs",
-          export: t3Export,
-          source: "settings" as const,
-        },
-      },
-      {
-        name: "a desktop bootstrap URL that differs from the setting wins as the desktop's own",
-        otel: withLogs(OtelEnvironment.OtelSignal.Unset()),
-        t3Url: undefined,
+    it("disables export with environment and fallback endpoints configured", () => {
+      const fallback = {
         bootstrapUrl: "http://desktop:4318/v1/logs",
-        expected: {
-          url: "http://desktop:4318/v1/logs",
-          export: t3Export,
-          source: "bootstrap" as const,
-        },
-      },
-      {
-        name: "a desktop bootstrap URL that forwards the setting counts as the setting",
-        otel: withLogs(OtelEnvironment.OtelSignal.Unset()),
-        t3Url: undefined,
-        bootstrapUrl: " http://settings:4318/v1/logs ",
-        expected: {
-          url: "http://settings:4318/v1/logs",
-          export: t3Export,
-          source: "settings" as const,
-        },
-      },
-    ])("$name", ({ otel, t3Url, bootstrapUrl = "", expected }) => {
-      assert.deepStrictEqual(
-        OtelEnvironment.resolveSignalEndpoint(
-          otel,
-          "logs",
-          { url: t3Url, export: t3Export },
-          { bootstrapUrl, settingsUrl: "http://settings:4318/v1/logs" },
-        ),
-        expected,
-      );
+        settingsUrl: "http://settings:4318/v1/logs",
+      };
+      for (const url of ["http://t3:4318/v1/logs", undefined]) {
+        for (const otel of [withLogs(otelExport), withLogs(OtelEnvironment.OtelSignal.Unset())]) {
+          assert.isUndefined(
+            OtelEnvironment.resolveSignalEndpoint(
+              otel,
+              "logs",
+              { url, export: t3Export },
+              fallback,
+            ),
+          );
+        }
+      }
     });
   });
 
-  it.effect("an exporter of none keeps the Settings endpoint from re-enabling its signal", () =>
+  it.effect("a settings endpoint cannot enable any signal", () =>
     Effect.gen(function* () {
       const otel = yield* load({ OTEL_LOGS_EXPORTER: "none" });
       const t3 = {
@@ -351,8 +293,8 @@ describe("OtelEnvironment", () => {
         OtelEnvironment.resolveSignalEndpoint(otel, "traces", t3, {
           bootstrapUrl: undefined,
           settingsUrl: "http://settings:4318/v1/traces",
-        })?.url,
-        "http://settings:4318/v1/traces",
+        }),
+        undefined,
       );
     }),
   );

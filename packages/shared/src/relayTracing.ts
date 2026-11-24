@@ -8,6 +8,8 @@ import * as Tracer from "effect/Tracer";
 import type { HttpClient } from "effect/http";
 import { OtlpSerialization, OtlpTracer } from "effect/observability";
 
+import { outboundTelemetryEnabled } from "./otelEnvironment.ts";
+
 export interface RelayClientTracingConfig {
   readonly tracesUrl: string;
   readonly tracesDataset: string;
@@ -152,7 +154,7 @@ export function layer(
   resource: RelayClientTracingResource,
   options?: { readonly isEnabled?: () => boolean },
 ): Layer.Layer<never, never, HttpClient.HttpClient> {
-  if (config === null) {
+  if (!outboundTelemetryEnabled || config === null) {
     return Layer.succeed(RelayClientTracer, Option.none());
   }
 
